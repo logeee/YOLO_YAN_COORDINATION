@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import html as html_lib
 import json
+import math
 import os
 import sys
 import threading
@@ -339,7 +340,9 @@ DEBUG_IMAGE_KEYS = {
 
 PROJECTED_IMAGE_KEYS = {
     "/debug/left_projected.jpg": "left_points",
+    "/debug/left_projected_zoom.jpg": "left_points",
     "/latest/left_projected.jpg": "left_points",
+    "/latest/left_projected_zoom.jpg": "left_points",
 }
 
 CANDIDATE_IMAGE_KEYS = {
@@ -353,12 +356,10 @@ DEBUG_DASHBOARD_PATHS = {"/debug", "/debug/", "/debug/all", "/debug/all.html"}
 
 
 def _project_xyz_to_px(payload: dict[str, Any], xyz_mm: Any) -> tuple[int, int] | None:
-    if not isinstance(xyz_mm, list) or len(xyz_mm) != 3:
+    values = _xyz_values(xyz_mm)
+    if values is None:
         return None
-    try:
-        x_mm, y_mm, z_mm = [float(value) for value in xyz_mm]
-    except Exception:
-        return None
+    x_mm, y_mm, z_mm = values
     if abs(z_mm) <= 1e-9:
         return None
     intrinsics = payload.get("intrinsics_assumption")
@@ -375,13 +376,78 @@ def _project_xyz_to_px(payload: dict[str, Any], xyz_mm: Any) -> tuple[int, int] 
     return int(round(u)), int(round(v))
 
 
+def _xyz_values(xyz_mm: Any) -> tuple[float, float, float] | None:
+    if not isinstance(xyz_mm, list) or len(xyz_mm) != 3:
+        return None
+    try:
+        return tuple(float(value) for value in xyz_mm)  # type: ignore[return-value]
+    except Exception:
+        return None
+
+
+def _draw_text(
+    image: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    color: tuple[int, int, int],
+    scale: float = 0.52,
+) -> None:
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(image, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 2, cv2.LINE_AA)
+
+
 def _draw_label(image: np.ndarray, xy: tuple[int, int], label: str, color: tuple[int, int, int], dy: int = -10) -> None:
     x, y = xy
     cv2.circle(image, (x, y), 8, color, -1)
     cv2.circle(image, (x, y), 10, (255, 255, 255), 2)
     origin = (x + 10, max(18, y + dy))
-    cv2.putText(image, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
-    cv2.putText(image, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+    _draw_text(image, label, origin, color, scale=0.55)
+
+
+def _projected_above_markers() -> list[tuple[str, str, tuple[int, int, int], int]]:
+    return [
+        ("center_above", "center_above_xyz_mm", (0, 0, 255), -18),
+        ("head_1/5_above", "box_head_point_above_xyz_mm", (255, 0, 255), 20),
+    ]
+
+
+def _zoom_projected_overlay(image: np.ndarray, payload: dict[str, Any]) -> np.ndarray:
+    xs: list[float] = []
+    ys: list[float] = []
+    for _, key, _, _ in _projected_above_markers():
+        xy = _project_xyz_to_px(payload, payload.get(key))
+        if xy is None:
+            continue
+        xs.append(float(xy[0]))
+        ys.append(float(xy[1]))
+
+    points = payload.get("points_px")
+    if isinstance(points, list):
+        for item in points:
+            if isinstance(item, list) and len(item) >= 2:
+                try:
+                    xs.append(float(item[0]))
+                    ys.append(float(item[1]))
+                except Exception:
+                    pass
+
+    if not xs or not ys:
+        return image
+
+    h, w = image.shape[:2]
+    padding = 80
+    x1 = max(0, int(math.floor(min(xs) - padding)))
+    y1 = max(0, int(math.floor(min(ys) - padding)))
+    x2 = min(w, int(math.ceil(max(xs) + padding)))
+    y2 = min(h, int(math.ceil(max(ys) + padding)))
+    if x2 <= x1 or y2 <= y1:
+        return image
+
+    crop = image[y1:y2, x1:x2].copy()
+    scale = 2.5
+    zoomed = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    _draw_text(zoomed, f"zoom x{scale:g}", (12, 28), (0, 255, 255), scale=0.7)
+    return zoomed
 
 
 def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
@@ -396,12 +462,7 @@ def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
     if image is None:
         raise RuntimeError(f"failed to read image: {image_path}")
 
-    markers = [
-        ("center", "center_xyz_mm", (0, 255, 255), -26),
-        ("center_above", "center_above_xyz_mm", (0, 0, 255), -8),
-        ("head_1/5", "box_head_point_xyz_mm", (255, 128, 0), 16),
-        ("head_1/5_above", "box_head_point_above_xyz_mm", (255, 0, 255), 34),
-    ]
+    markers = _projected_above_markers()
     drawn = 0
     for label, key, color, dy in markers:
         xy = _project_xyz_to_px(payload, payload.get(key))
@@ -433,6 +494,9 @@ def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
             1,
             cv2.LINE_AA,
         )
+
+    if "zoom" in path:
+        image = _zoom_projected_overlay(image, payload)
 
     ok, encoded = cv2.imencode(".jpg", image)
     if not ok:
@@ -642,7 +706,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         [
             '<section><h2>Left Input</h2><img src="/latest/left_input.jpg" alt="left input"></section>',
             '<section><h2>Left Points</h2><img src="/latest/left_points.jpg" alt="left points"></section>',
-            '<section><h2>Left Projected XYZ Points</h2><img src="/latest/left_projected.jpg" alt="left projected xyz points"></section>',
+            '<section><h2>Left Above Points</h2><img src="/latest/left_projected.jpg" alt="left projected above points"></section>',
+            '<section class="wide"><h2>Left Above Points Zoom</h2><img src="/latest/left_projected_zoom.jpg" alt="left projected above points zoom"></section>',
             '<section><h2>Left All Candidates</h2><img src="/latest/left_candidates.jpg" alt="left candidates"></section>',
             '<section><h2>Right Input</h2><img src="/latest/right_input.jpg" alt="right input"></section>',
             '<section><h2>Right Points</h2><img src="/latest/right_points.jpg" alt="right points"></section>',
@@ -662,6 +727,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }}
     section {{ border: 1px solid #d9e2ec; padding: 10px; }}
     img {{ width: 100%; max-width: 640px; height: auto; display: block; background: #f0f4f8; }}
+    .wide {{ grid-column: 1 / -1; }}
+    .wide img {{ max-width: 1100px; }}
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
     th, td {{ border: 1px solid #d9e2ec; padding: 5px; vertical-align: top; }}
     th {{ background: #f0f4f8; }}
@@ -734,6 +801,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/debug/left_candidates.jpg",
             "/debug/right_candidates.jpg",
             "/debug/left_projected.jpg",
+            "/debug/left_projected_zoom.jpg",
             "/latest/left_points.jpg",
             "/latest/right_points.jpg",
             "/latest/left_input.jpg",
@@ -741,6 +809,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/latest/left_candidates.jpg",
             "/latest/right_candidates.jpg",
             "/latest/left_projected.jpg",
+            "/latest/left_projected_zoom.jpg",
             "/debug",
         ],
     }
