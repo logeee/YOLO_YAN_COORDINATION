@@ -73,6 +73,7 @@ OVERRIDE_TYPES: dict[str, type] = {
     "host": str,
     "calibrate_focal_from_known_range": bool,
     "camera_to_vertical_deg": float,
+    "center_above_height_mm": float,
     "box_head_above_height_mm": float,
     "box_head_fraction_from_head": float,
 }
@@ -263,6 +264,8 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "x_mm": result.get("x_mm"),
         "y_mm": result.get("y_mm"),
         "z_mm": result.get("z_mm"),
+        "center_above_xyz_mm": result.get("center_above_xyz_mm"),
+        "center_above": result.get("center_above"),
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         "left_depth_mm": result.get("left_depth_mm"),
         "optical_axis_depth_mm": result.get("optical_axis_depth_mm"),

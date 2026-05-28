@@ -45,10 +45,18 @@ curl -s http://127.0.0.1:18081/xyz \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['box_head_point_above_xyz_mm'])"
 ```
 
+只取中心点垂直地面向上 10cm 的点：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
+```
+
 相关字段：
 
 ```text
 center_xyz_mm                 烟盒上表面中心点
+center_above_xyz_mm           中心点垂直地面向上 10cm 的点
 box_head_point_xyz_mm          远处头部往内 1/5 的点
 box_head_point_above_xyz_mm    上面这个点垂直地面向上 10cm 的点
 range_from_left_camera_mm      左目光心到中心点直线距离
@@ -64,6 +72,12 @@ curl -s "http://127.0.0.1:18081/xyz?box_head_fraction_from_head=0.333333"
 
 ```bash
 curl -s "http://127.0.0.1:18081/xyz?box_head_above_height_mm=80"
+```
+
+临时修改中心点 above 高度，例如 80mm：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?center_above_height_mm=80"
 ```
 
 ## Debug 页面

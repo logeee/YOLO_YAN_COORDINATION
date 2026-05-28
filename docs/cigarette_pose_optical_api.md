@@ -104,10 +104,23 @@ cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unit
 bash scripts/cigarette_pose_yolo_gpu.sh | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_xyz_mm'])"
 ```
 
+只打印中心点垂直地面上方 10cm 的点：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
+```
+
+如果临时要改中心点 above 高度，例如 80mm：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?center_above_height_mm=80" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
+```
+
 如果下游需要直线距离和坐标，建议读取完整 JSON 里的这两个字段：
 
 ```text
 center_xyz_mm                 [x_mm, y_mm, z_mm]
+center_above_xyz_mm        中心点沿地面垂直向上 100mm 后的位置
 range_from_left_camera_mm     左相机光心到上表面中心点的直线距离
 ```
 
@@ -507,6 +520,18 @@ curl -s "http://127.0.0.1:18081/xyz?yolo_select=score&yolo_index=0"
 
 ```bash
 curl -s http://127.0.0.1:18081/xyz | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_xyz_mm'])"
+```
+
+只打印中心点垂直地面上方 10cm 的点：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
+```
+
+如果临时要改中心点 above 高度，例如 80mm：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?center_above_height_mm=80" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
 ```
 
 直接看当前输出图片：

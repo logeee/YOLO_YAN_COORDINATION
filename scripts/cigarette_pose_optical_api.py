@@ -48,6 +48,7 @@ from yolo_topface_detector import YOLO_SELECT_METHODS, detect_yolo_points_from_i
 
 ORIENTATIONS = ("long_x_short_y", "short_x_long_y")
 DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4
+DEFAULT_CENTER_ABOVE_HEIGHT_MM = 100.0
 DEFAULT_BOX_HEAD_ABOVE_HEIGHT_MM = 100.0
 DEFAULT_BOX_HEAD_FRACTION_FROM_HEAD = 0.2
 
@@ -1000,6 +1001,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="angle between camera +Z and the ground vertical-down direction",
     )
     parser.add_argument(
+        "--center-above-height-mm",
+        type=float,
+        default=DEFAULT_CENTER_ABOVE_HEIGHT_MM,
+        help="vertical height added above center_xyz_mm",
+    )
+    parser.add_argument(
         "--box-head-above-height-mm",
         type=float,
         default=DEFAULT_BOX_HEAD_ABOVE_HEIGHT_MM,
@@ -1357,6 +1364,11 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     else:
         focal_calibration = None
 
+    center_above = _above_point_detail(
+        selected_left["center_xyz_mm"],
+        height_mm=args.center_above_height_mm,
+        camera_to_vertical_deg=args.camera_to_vertical_deg,
+    )
     box_head_one_third_above = _above_point_detail(
         selected_left["box_head_point_xyz_mm"],
         height_mm=args.box_head_above_height_mm,
@@ -1399,6 +1411,8 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "x_mm": selected_left["x_mm"],
         "y_mm": selected_left["y_mm"],
         "z_mm": selected_left["z_mm"],
+        "center_above_xyz_mm": center_above["point_xyz_mm"],
+        "center_above": center_above,
         "left_depth_mm": selected_left["depth_mm"],
         "optical_axis_depth_mm": selected_left["optical_axis_depth_mm"],
         "range_from_left_camera_mm": selected_left["range_from_left_camera_mm"],
