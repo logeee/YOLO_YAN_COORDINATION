@@ -235,3 +235,26 @@ YOLO 模块负责：
 candidates[*].points_px
 selected.points_px
 ```
+## 标签过滤
+
+YOLO 检测层支持按类别标签过滤候选。传入标签后，只保留匹配该标签的 mask，再按 `confidence` 选择置信度最高的候选。
+
+命令行示例：
+
+```bash
+PYTHONPATH="$PWD:$PWD/scripts" python scripts/yolo_topface_detector.py \
+  --image /tmp/left.jpg \
+  --model models/Liqun_Xiongmao.pt \
+  --label XiongMao \
+  --select confidence \
+  --pretty
+```
+
+坐标服务示例：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=XiongMao"
+curl -s "http://127.0.0.1:18081/xyz?label=Liqun"
+```
+
+`Liqun` 会匹配模型类别名 `Xizi_Liqun`。候选和选中结果里都会保留 `class_id`、`class_name`、`confidence`，便于下游确认当前坐标来自哪一类烟盒。

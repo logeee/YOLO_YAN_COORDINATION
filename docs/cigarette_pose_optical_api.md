@@ -977,3 +977,32 @@ python3 scripts/cigarette_pose_above_center.py \
 ```
 
 这个模式的高度部分只改 `Z`，再叠加 `ground-offset-mm` 指定的地面平行偏移；它不是严格的三维垂直上移，正式抓取预点建议使用默认的 `ground_vertical_yz_vector`。
+## 按标签选择最高置信度候选
+
+如果画面里有多种烟盒，可以在 `/xyz` 或 `/pose` 里传 `label` / `yolo_label` / `yolo_class_name`。接口会先按 YOLO 类别过滤候选，再按 `confidence` 从高到低选择第 0 个候选计算坐标。
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=XiongMao"
+curl -s "http://127.0.0.1:18081/xyz?label=Liqun"
+curl -s "http://127.0.0.1:18081/xyz?label=Xizi_Liqun"
+```
+
+只打印这个标签下最高置信度目标的中心点：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=XiongMao" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['selected_yolo_label'], d['selected_yolo_confidence'], d['center_xyz_mm'])"
+```
+
+常用返回字段：
+
+```text
+requested_yolo_label       请求的类别标签
+selected_yolo_label        实际选中的 YOLO 类别
+selected_yolo_confidence   实际选中候选的 YOLO 置信度
+center_xyz_mm              该候选上表面中心点坐标
+center_above_xyz_mm        该候选中心点上方 10cm 坐标
+box_head_point_above_xyz_mm 该候选头部 1/5 点上方 10cm 坐标
+```
+
+`label=Liqun` 会匹配模型类别名 `Xizi_Liqun`；也可以直接传完整类别名。没有匹配到对应标签时，接口会返回错误，并列出当前画面中 YOLO 检到的可用标签。
