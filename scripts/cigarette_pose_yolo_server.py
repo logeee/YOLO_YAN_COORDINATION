@@ -337,6 +337,11 @@ DEBUG_IMAGE_KEYS = {
     "/latest/right_input.jpg": "right_input",
 }
 
+PROJECTED_IMAGE_KEYS = {
+    "/debug/left_projected.jpg": "left_points",
+    "/latest/left_projected.jpg": "left_points",
+}
+
 CANDIDATE_IMAGE_KEYS = {
     "/debug/left_candidates.jpg": ("left_input", "left_yolo_candidates", "left_yolo"),
     "/debug/right_candidates.jpg": ("right_input", "right_yolo_candidates", "right_yolo"),
@@ -345,6 +350,94 @@ CANDIDATE_IMAGE_KEYS = {
 }
 
 DEBUG_DASHBOARD_PATHS = {"/debug", "/debug/", "/debug/all", "/debug/all.html"}
+
+
+def _project_xyz_to_px(payload: dict[str, Any], xyz_mm: Any) -> tuple[int, int] | None:
+    if not isinstance(xyz_mm, list) or len(xyz_mm) != 3:
+        return None
+    try:
+        x_mm, y_mm, z_mm = [float(value) for value in xyz_mm]
+    except Exception:
+        return None
+    if abs(z_mm) <= 1e-9:
+        return None
+    intrinsics = payload.get("intrinsics_assumption")
+    if not isinstance(intrinsics, dict):
+        return None
+    try:
+        focal_px = float(intrinsics.get("focal_px"))
+        cx = float(intrinsics.get("cx"))
+        cy = float(intrinsics.get("cy"))
+    except Exception:
+        return None
+    u = focal_px * x_mm / z_mm + cx
+    v = focal_px * y_mm / z_mm + cy
+    return int(round(u)), int(round(v))
+
+
+def _draw_label(image: np.ndarray, xy: tuple[int, int], label: str, color: tuple[int, int, int], dy: int = -10) -> None:
+    x, y = xy
+    cv2.circle(image, (x, y), 8, color, -1)
+    cv2.circle(image, (x, y), 10, (255, 255, 255), 2)
+    origin = (x + 10, max(18, y + dy))
+    cv2.putText(image, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(image, label, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA)
+
+
+def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
+    image_key = PROJECTED_IMAGE_KEYS[path]
+    debug_images = payload.get("debug_images")
+    if not isinstance(debug_images, dict):
+        raise RuntimeError("debug_images not available")
+    image_path = Path(str(debug_images.get(image_key, "")))
+    if not image_path.exists():
+        raise RuntimeError(f"image file not found: {image_path}")
+    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+    if image is None:
+        raise RuntimeError(f"failed to read image: {image_path}")
+
+    markers = [
+        ("center", "center_xyz_mm", (0, 255, 255), -26),
+        ("center_above", "center_above_xyz_mm", (0, 0, 255), -8),
+        ("head_1/5", "box_head_point_xyz_mm", (255, 128, 0), 16),
+        ("head_1/5_above", "box_head_point_above_xyz_mm", (255, 0, 255), 34),
+    ]
+    drawn = 0
+    for label, key, color, dy in markers:
+        xy = _project_xyz_to_px(payload, payload.get(key))
+        if xy is None:
+            continue
+        _draw_label(image, xy, label, color, dy=dy)
+        drawn += 1
+
+    if drawn == 0:
+        cv2.putText(image, "No projected XYZ points", (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
+    else:
+        cv2.putText(
+            image,
+            "Projected from /xyz using u=fx*x/z+cx, v=fx*y/z+cy",
+            (12, image.shape[0] - 14),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            "Projected from /xyz using u=fx*x/z+cx, v=fx*y/z+cy",
+            (12, image.shape[0] - 14),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 0, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    ok, encoded = cv2.imencode(".jpg", image)
+    if not ok:
+        raise RuntimeError("failed to encode projected overlay")
+    return encoded.tobytes()
 
 
 def _serve_debug_image(
@@ -477,6 +570,31 @@ def _serve_candidate_image(
     _bytes_response(handler, 200, data, "image/jpeg")
 
 
+def _serve_projected_image(
+    handler: BaseHTTPRequestHandler,
+    config: ServerConfig,
+    path: str,
+    overrides: dict[str, Any],
+) -> None:
+    if path.startswith("/debug/"):
+        status, payload = _run_pose_request(config, compact=False, overrides=overrides)
+    else:
+        status = 200
+        payload = LATEST_RESULT
+    if not isinstance(payload, dict):
+        _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug first"})
+        return
+    if not bool(payload.get("ok")):
+        _json_response(handler, status, payload)
+        return
+    try:
+        data = _draw_projected_points_overlay(payload, path)
+    except Exception as exc:
+        _json_response(handler, 500, {"ok": False, "error": str(exc), "result": payload})
+        return
+    _bytes_response(handler, 200, data, "image/jpeg")
+
+
 def _candidate_table(candidates: Any) -> str:
     if not isinstance(candidates, list) or not candidates:
         return "<p>No YOLO candidates.</p>"
@@ -524,6 +642,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         [
             '<section><h2>Left Input</h2><img src="/latest/left_input.jpg" alt="left input"></section>',
             '<section><h2>Left Points</h2><img src="/latest/left_points.jpg" alt="left points"></section>',
+            '<section><h2>Left Projected XYZ Points</h2><img src="/latest/left_projected.jpg" alt="left projected xyz points"></section>',
             '<section><h2>Left All Candidates</h2><img src="/latest/left_candidates.jpg" alt="left candidates"></section>',
             '<section><h2>Right Input</h2><img src="/latest/right_input.jpg" alt="right input"></section>',
             '<section><h2>Right Points</h2><img src="/latest/right_points.jpg" alt="right points"></section>',
@@ -614,12 +733,14 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/debug/right_input.jpg",
             "/debug/left_candidates.jpg",
             "/debug/right_candidates.jpg",
+            "/debug/left_projected.jpg",
             "/latest/left_points.jpg",
             "/latest/right_points.jpg",
             "/latest/left_input.jpg",
             "/latest/right_input.jpg",
             "/latest/left_candidates.jpg",
             "/latest/right_candidates.jpg",
+            "/latest/left_projected.jpg",
             "/debug",
         ],
     }
@@ -669,6 +790,10 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 if path in DEBUG_IMAGE_KEYS:
                     overrides = _request_overrides(self)
                     _serve_debug_image(self, config, path, overrides)
+                    return
+                if path in PROJECTED_IMAGE_KEYS:
+                    overrides = _request_overrides(self)
+                    _serve_projected_image(self, config, path, overrides)
                     return
                 if path in CANDIDATE_IMAGE_KEYS:
                     overrides = _request_overrides(self)
