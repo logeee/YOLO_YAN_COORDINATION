@@ -67,6 +67,9 @@ OVERRIDE_TYPES: dict[str, type] = {
     "yolo_mask_threshold": float,
     "yolo_select": str,
     "yolo_index": int,
+    "yolo_label": str,
+    "yolo_class_name": str,
+    "label": str,
     "max_reproj_px": float,
     "max_depth_delta_mm": float,
     "stereo_baseline_mm": float,
@@ -254,6 +257,7 @@ def _left_yolo_selection_summary(result: dict[str, Any]) -> dict[str, Any]:
         "left_yolo_class_name": left_yolo.get("class_name"),
         "left_yolo_confidence": left_yolo.get("confidence"),
         "left_yolo_score": left_yolo.get("score"),
+        "left_yolo_label_filter": left_yolo.get("label_filter"),
     }
 
 
@@ -270,6 +274,10 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         "left_depth_mm": result.get("left_depth_mm"),
         "optical_axis_depth_mm": result.get("optical_axis_depth_mm"),
+        "requested_yolo_label": result.get("requested_yolo_label"),
+        "selected_yolo_label": result.get("selected_yolo_label"),
+        "selected_yolo_class_id": result.get("selected_yolo_class_id"),
+        "selected_yolo_confidence": result.get("selected_yolo_confidence"),
         "vertical_up_unit_xyz": result.get("vertical_up_unit_xyz"),
         "vertical_up_source": result.get("vertical_up_source"),
         "top_plane_camera_to_vertical_deg": result.get("top_plane_camera_to_vertical_deg"),

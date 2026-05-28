@@ -965,7 +965,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--yolo-select",
         choices=YOLO_SELECT_METHODS,
-        default="score",
+        default="confidence",
         help="how to order multiple YOLO masks before choosing one for PnP",
     )
     parser.add_argument(
@@ -973,6 +973,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="candidate index after --yolo-select ordering; only this candidate is used for PnP",
+    )
+    parser.add_argument(
+        "--yolo-label",
+        "--yolo-class-name",
+        "--label",
+        dest="yolo_label",
+        help=(
+            "only use YOLO detections matching this class name/id, then select the highest-confidence "
+            "candidate by default; examples: XiongMao, Xizi_Liqun, Liqun"
+        ),
     )
     parser.add_argument(
         "--points-order",
@@ -1252,6 +1262,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 mask_threshold=args.yolo_mask_threshold,
                 select=args.yolo_select,
                 select_index=args.yolo_index,
+                label_filter=args.yolo_label,
             )
             left_yolo_candidates = left_yolo.pop("candidates", [])
             left_raw_points = left_det.points
@@ -1271,6 +1282,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                         mask_threshold=args.yolo_mask_threshold,
                         select=args.yolo_select,
                         select_index=args.yolo_index,
+                        label_filter=args.yolo_label,
                     )
                     right_yolo_candidates = right_yolo.pop("candidates", [])
                     right_raw_points = right_det.points
@@ -1289,6 +1301,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "yolo_selection": {
                     "method": args.yolo_select,
                     "index": int(args.yolo_index),
+                    "label_filter": args.yolo_label,
                     "note": "YOLO may return multiple masks; only the selected candidate is used for PnP/XYZ",
                 },
             }
@@ -1465,6 +1478,12 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "frame": "left_camera_optical",
         "coordinate_system": optical_coordinate_convention(),
         "selected_orientation": selected_orientation,
+        "requested_yolo_label": args.yolo_label,
+        "selected_yolo_label": left_yolo.get("class_name") if "left_yolo" in locals() and isinstance(left_yolo, dict) else None,
+        "selected_yolo_class_id": left_yolo.get("class_id") if "left_yolo" in locals() and isinstance(left_yolo, dict) else None,
+        "selected_yolo_confidence": (
+            left_yolo.get("confidence") if "left_yolo" in locals() and isinstance(left_yolo, dict) else None
+        ),
         "center_xyz_mm": selected_left["center_xyz_mm"],
         "x_mm": selected_left["x_mm"],
         "y_mm": selected_left["y_mm"],

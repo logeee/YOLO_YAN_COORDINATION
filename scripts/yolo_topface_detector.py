@@ -21,7 +21,17 @@ from auto_pnp_cuboid_depth import Detection, contour_to_quad, order_quad
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-YOLO_SELECT_METHODS = ("score", "largest", "leftmost", "rightmost", "topmost", "bottommost", "center", "index")
+YOLO_SELECT_METHODS = (
+    "confidence",
+    "score",
+    "largest",
+    "leftmost",
+    "rightmost",
+    "topmost",
+    "bottommost",
+    "center",
+    "index",
+)
 YOLO_MODEL_CACHE: dict[tuple[str, str], Any] = {}
 
 
@@ -104,6 +114,8 @@ def _sort_candidate_records(
         dy = float(record["center_y"]) - center_y
         return dx * dx + dy * dy
 
+    if select == "confidence":
+        return sorted(records, key=lambda item: (-float(item["confidence"]), int(item["raw_yolo_index"])))
     if select == "score":
         return sorted(records, key=lambda item: (-float(item["score"]), int(item["raw_yolo_index"])))
     if select == "largest":
@@ -123,6 +135,30 @@ def _sort_candidate_records(
     raise ValueError(f"unsupported YOLO select method: {select}")
 
 
+def _normalize_label(text: Any) -> str:
+    return "".join(ch for ch in str(text).strip().lower() if ch.isalnum())
+
+
+def _parse_label_filter(label_filter: str | None) -> set[str]:
+    if label_filter is None:
+        return set()
+    labels = {_normalize_label(item) for item in str(label_filter).split(",") if _normalize_label(item)}
+    return labels
+
+
+def _class_matches_filter(class_id: int, class_name: str, labels: set[str]) -> bool:
+    if not labels:
+        return True
+    class_id_text = _normalize_label(class_id)
+    class_name_text = _normalize_label(class_name)
+    for label in labels:
+        if label == class_id_text or label == class_name_text:
+            return True
+        if label and label in class_name_text:
+            return True
+    return False
+
+
 def detect_yolo_points_from_image(
     image: np.ndarray,
     model_path: str | Path,
@@ -132,6 +168,7 @@ def detect_yolo_points_from_image(
     mask_threshold: float = 0.5,
     select: str = "score",
     select_index: int = 0,
+    label_filter: str | None = None,
 ) -> tuple[Detection, dict[str, Any]]:
     """Return selected top-face detection plus metadata for all candidates.
 
@@ -157,12 +194,15 @@ def detect_yolo_points_from_image(
         raise RuntimeError(f"YOLO found no detections above conf={conf}")
 
     names = result.names or getattr(model, "names", {}) or {}
+    requested_labels = _parse_label_filter(label_filter)
     candidate_records: list[dict[str, Any]] = []
+    filtered_out_records: list[dict[str, Any]] = []
     for idx, box in enumerate(result.boxes):
         confidence = float(box.conf.item())
         if confidence < float(conf):
             continue
         cls_id = int(box.cls.item())
+        class_name = str(names.get(cls_id, cls_id))
         xyxy = box.xyxy.reshape(-1).detach().cpu().numpy().astype(float)
         bbox = _bbox_xyxy_to_xywh(xyxy, image.shape)
         x1, y1, x2, y2 = [float(value) for value in xyxy.tolist()]
@@ -183,26 +223,38 @@ def detect_yolo_points_from_image(
             "confidence": round(confidence, 4),
             "score": round(float(score), 6),
             "class_id": cls_id,
-            "class_name": str(names.get(cls_id, cls_id)),
+            "class_name": class_name,
             "box_xyxy": [round(float(value), 1) for value in xyxy.tolist()],
             "box_center_px": [round((x1 + x2) / 2.0, 2), round((y1 + y2) / 2.0, 2)],
             "mask_area_px": round(float(mask_area), 1),
             "points_px": _points_list(points),
         }
-        candidate_records.append(
-            {
-                "raw_yolo_index": int(idx),
-                "score": float(score),
-                "mask_area_px": float(mask_area),
-                "center_x": (x1 + x2) / 2.0,
-                "center_y": (y1 + y2) / 2.0,
-                "detection": detection,
-                "info": info,
-            }
-        )
+        record = {
+            "raw_yolo_index": int(idx),
+            "confidence": float(confidence),
+            "score": float(score),
+            "mask_area_px": float(mask_area),
+            "center_x": (x1 + x2) / 2.0,
+            "center_y": (y1 + y2) / 2.0,
+            "detection": detection,
+            "info": info,
+        }
+        if _class_matches_filter(cls_id, class_name, requested_labels):
+            candidate_records.append(record)
+        else:
+            filtered_out_records.append(record)
 
     if not candidate_records:
-        raise RuntimeError(f"YOLO found no detections above conf={conf}")
+        available = sorted(
+            {
+                str(record["info"].get("class_name"))
+                for record in filtered_out_records
+                if isinstance(record.get("info"), dict)
+            }
+        )
+        label_note = f" matching label_filter={label_filter!r}" if requested_labels else ""
+        available_note = f"; available labels above conf: {available}" if available else ""
+        raise RuntimeError(f"YOLO found no detections above conf={conf}{label_note}{available_note}")
     ordered_records = _sort_candidate_records(candidate_records, select, image.shape)
     for candidate_index, record in enumerate(ordered_records):
         record["info"]["candidate_index"] = int(candidate_index)
@@ -221,7 +273,16 @@ def detect_yolo_points_from_image(
             "selected_candidate_index": int(select_index),
             "selection_method": select,
             "candidate_count": len(ordered_records),
+            "label_filter": str(label_filter) if label_filter else None,
+            "filtered_out_candidate_count": len(filtered_out_records),
             "candidates": [dict(record["info"]) for record in ordered_records],
+            "all_candidate_labels": sorted(
+                {
+                    str(record["info"].get("class_name"))
+                    for record in [*candidate_records, *filtered_out_records]
+                    if isinstance(record.get("info"), dict)
+                }
+            ),
         }
     )
     return selected_record["detection"], selected_info
@@ -242,8 +303,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--mask-threshold", type=float, default=0.5)
-    parser.add_argument("--select", choices=YOLO_SELECT_METHODS, default="score")
+    parser.add_argument("--select", choices=YOLO_SELECT_METHODS, default="confidence")
     parser.add_argument("--index", type=int, default=0)
+    parser.add_argument("--label", "--class-name", dest="label_filter", help="only select this YOLO class name/id")
     parser.add_argument("--pretty", action="store_true")
     return parser
 
@@ -262,6 +324,7 @@ def main() -> int:
         mask_threshold=args.mask_threshold,
         select=args.select,
         select_index=args.index,
+        label_filter=args.label_filter,
     )
     candidates = info.pop("candidates", [])
     result = {
