@@ -80,6 +80,40 @@ curl -s "http://127.0.0.1:18081/xyz?box_head_above_height_mm=80"
 curl -s "http://127.0.0.1:18081/xyz?center_above_height_mm=80"
 ```
 
+## 149 机器人附加推荐
+
+149 这台机器人的电机目前有实测偏差，下面是临时推荐给抓取端使用的点位规则。单位都是 `mm`，坐标系仍然是 `left_camera_optical`。
+
+```text
+XiongMao:
+  使用 box_head_point_above_xyz_mm，也就是 head_1_5_above
+  然后额外加偏移 [20, 0, 0]
+
+Xizi_Liqun:
+  直接使用 center_above_xyz_mm
+```
+
+熊猫烟盒推荐点：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=XiongMao" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['box_head_point_above_xyz_mm']; p=[p[0]+20.0,p[1],p[2]]; print(p)"
+```
+
+利群烟盒推荐点：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=Xizi_Liqun" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
+```
+
+`label=Liqun` 也可以匹配 `Xizi_Liqun`：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=Liqun" \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
+```
+
 ## Debug 页面
 
 机器人本机：
