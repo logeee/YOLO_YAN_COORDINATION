@@ -270,6 +270,9 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         "left_depth_mm": result.get("left_depth_mm"),
         "optical_axis_depth_mm": result.get("optical_axis_depth_mm"),
+        "vertical_up_unit_xyz": result.get("vertical_up_unit_xyz"),
+        "vertical_up_source": result.get("vertical_up_source"),
+        "top_plane_camera_to_vertical_deg": result.get("top_plane_camera_to_vertical_deg"),
         "object_top_size_mm": result.get("object_top_size_mm"),
         "object_top_size_source": result.get("object_top_size_source"),
         "box_head_fraction_from_head": result.get("box_head_fraction_from_head"),
@@ -406,8 +409,8 @@ def _draw_label(image: np.ndarray, xy: tuple[int, int], label: str, color: tuple
 
 def _projected_above_markers() -> list[tuple[str, str, tuple[int, int, int], int]]:
     return [
-        ("center_above", "center_above_xyz_mm", (0, 0, 255), -18),
-        ("head_1/5_above", "box_head_point_above_xyz_mm", (255, 0, 255), 20),
+        ("C", "center_above_xyz_mm", (0, 0, 255), -18),
+        ("H", "box_head_point_above_xyz_mm", (255, 0, 255), 20),
     ]
 
 
@@ -474,6 +477,7 @@ def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
     if drawn == 0:
         cv2.putText(image, "No projected XYZ points", (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
     else:
+        _draw_text(image, "C=center_above  H=head_1/5_above", (12, 28), (255, 255, 255), scale=0.55)
         cv2.putText(
             image,
             "Projected from /xyz using u=fx*x/z+cx, v=fx*y/z+cy",

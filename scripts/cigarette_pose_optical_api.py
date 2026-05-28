@@ -193,20 +193,70 @@ def _vertical_up_offset_xyz_mm(
     ]
 
 
+def _vertical_up_unit_from_camera_angle(camera_to_vertical_deg: float = DEFAULT_CAMERA_TO_VERTICAL_DEG) -> np.ndarray:
+    theta = math.radians(float(camera_to_vertical_deg))
+    return np.asarray([0.0, -math.sin(theta), -math.cos(theta)], dtype=np.float64)
+
+
+def _camera_to_vertical_deg_from_up_unit(up_unit_xyz: list[float] | np.ndarray) -> float:
+    up = np.asarray(up_unit_xyz, dtype=np.float64).reshape(3)
+    norm = float(np.linalg.norm(up))
+    if norm <= 1e-9:
+        return float("nan")
+    up = up / norm
+    vertical_down_z = float(-up[2])
+    vertical_down_z = max(-1.0, min(1.0, vertical_down_z))
+    return math.degrees(math.acos(vertical_down_z))
+
+
+def _top_plane_up_unit_xyz(
+    rotation_matrix: Any,
+    camera_to_vertical_deg: float = DEFAULT_CAMERA_TO_VERTICAL_DEG,
+) -> list[float]:
+    rotation = np.asarray(rotation_matrix, dtype=np.float64).reshape(3, 3)
+    normal = rotation @ np.asarray([0.0, 0.0, 1.0], dtype=np.float64)
+    norm = float(np.linalg.norm(normal))
+    if norm <= 1e-9:
+        raise ValueError("cannot compute top-plane normal from a zero-length vector")
+    normal = normal / norm
+    expected_up = _vertical_up_unit_from_camera_angle(camera_to_vertical_deg)
+    if float(np.dot(normal, expected_up)) < 0.0:
+        normal = -normal
+    return [float(value) for value in normal.tolist()]
+
+
 def _above_point_detail(
     base_xyz_mm: list[float],
     height_mm: float = DEFAULT_BOX_HEAD_ABOVE_HEIGHT_MM,
     camera_to_vertical_deg: float = DEFAULT_CAMERA_TO_VERTICAL_DEG,
+    vertical_up_unit_xyz: list[float] | None = None,
+    vertical_up_source: str = "configured_camera_pitch",
 ) -> dict[str, Any]:
-    offset = _vertical_up_offset_xyz_mm(height_mm, camera_to_vertical_deg)
+    if vertical_up_unit_xyz is None:
+        offset = _vertical_up_offset_xyz_mm(height_mm, camera_to_vertical_deg)
+        up_unit = _vertical_up_unit_from_camera_angle(camera_to_vertical_deg)
+        angle_deg = float(camera_to_vertical_deg)
+        method = "ground_vertical_up_from_configured_camera_pitch"
+    else:
+        up_unit = np.asarray(vertical_up_unit_xyz, dtype=np.float64).reshape(3)
+        norm = float(np.linalg.norm(up_unit))
+        if norm <= 1e-9:
+            raise ValueError("vertical_up_unit_xyz cannot be zero-length")
+        up_unit = up_unit / norm
+        offset = [float(height_mm) * float(value) for value in up_unit.tolist()]
+        angle_deg = _camera_to_vertical_deg_from_up_unit(up_unit)
+        method = "ground_vertical_up_from_pnp_top_face_normal"
     above = [float(base_xyz_mm[i]) + float(offset[i]) for i in range(3)]
     return {
         "point_xyz_mm": _round_list(above),
         "base_xyz_mm": _round_list(base_xyz_mm),
         "height_above_base_mm": round(float(height_mm), 1),
-        "camera_to_vertical_deg": round(float(camera_to_vertical_deg), 3),
+        "camera_to_vertical_deg": round(float(angle_deg), 3),
+        "configured_camera_to_vertical_deg": round(float(camera_to_vertical_deg), 3),
+        "vertical_up_unit_xyz": _round_list(up_unit.tolist(), 6),
+        "vertical_up_source": vertical_up_source,
         "vertical_up_offset_xyz_mm": _round_list(offset),
-        "method": "ground_vertical_up_from_base_point",
+        "method": method,
     }
 
 
@@ -558,6 +608,7 @@ def estimate_pose_from_left_points(
     points = normalize_points(points_px, points_order)
     width_m, height_m = _orientation_size(config, selected_orientation)
     depth = solve_depth(points, width_m, height_m, config.focal_px, config.cx, config.cy)
+    top_plane_up_unit_xyz = _top_plane_up_unit_xyz(depth["rotation_matrix"])
     box_head_point = _box_head_one_third_point(
         depth,
         width_m,
@@ -595,6 +646,9 @@ def estimate_pose_from_left_points(
         "box_head_fraction_from_head": round(float(box_head_fraction_from_head), 6),
         "box_head_point_xyz_mm": box_head_point["point_xyz_mm"],
         "box_head_point": box_head_point,
+        "top_plane_up_unit_xyz": _round_list(top_plane_up_unit_xyz, 6),
+        "top_plane_up_source": "pnp_top_face_normal",
+        "top_plane_camera_to_vertical_deg": round(_camera_to_vertical_deg_from_up_unit(top_plane_up_unit_xyz), 3),
         # Backward-compatible aliases. The value now follows box_head_fraction_from_head.
         "box_head_one_third_xyz_mm": box_head_point["point_xyz_mm"],
         "box_head_one_third": box_head_point,
@@ -1368,11 +1422,15 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         selected_left["center_xyz_mm"],
         height_mm=args.center_above_height_mm,
         camera_to_vertical_deg=args.camera_to_vertical_deg,
+        vertical_up_unit_xyz=selected_left.get("top_plane_up_unit_xyz"),
+        vertical_up_source=selected_left.get("top_plane_up_source", "pnp_top_face_normal"),
     )
     box_head_one_third_above = _above_point_detail(
         selected_left["box_head_point_xyz_mm"],
         height_mm=args.box_head_above_height_mm,
         camera_to_vertical_deg=args.camera_to_vertical_deg,
+        vertical_up_unit_xyz=selected_left.get("top_plane_up_unit_xyz"),
+        vertical_up_source=selected_left.get("top_plane_up_source", "pnp_top_face_normal"),
     )
 
     stereo_check = None
@@ -1418,6 +1476,9 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "range_from_left_camera_mm": selected_left["range_from_left_camera_mm"],
         "direction_unit_xyz": selected_left["direction_unit_xyz"],
         "coordinate_method": selected_left["coordinate_method"],
+        "vertical_up_unit_xyz": selected_left.get("top_plane_up_unit_xyz"),
+        "vertical_up_source": selected_left.get("top_plane_up_source"),
+        "top_plane_camera_to_vertical_deg": selected_left.get("top_plane_camera_to_vertical_deg"),
         "opencv_camera_xyz_mm": selected_left["opencv_camera_xyz_mm"],
         "pnp_center_xyz_mm": selected_left["pnp_center_xyz_mm"],
         "left_reprojection_error_px": selected_left["reprojection_error_px"],
