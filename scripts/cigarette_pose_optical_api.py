@@ -886,23 +886,9 @@ def _load_or_capture(args: argparse.Namespace) -> tuple[np.ndarray | None, np.nd
     return _load_image(args.left_image, "left"), _load_image(args.right_image, "right")
 
 
-def _bbox_from_points(
-    points: np.ndarray,
-    image_shape: tuple[int, ...] | None = None,
-    padding_px: int = 0,
-) -> tuple[int, int, int, int]:
+def _bbox_from_points(points: np.ndarray) -> tuple[int, int, int, int]:
     x, y, w, h = cv2.boundingRect(points.astype(np.float32))
-    x1 = int(x) - int(padding_px)
-    y1 = int(y) - int(padding_px)
-    x2 = int(x + w) + int(padding_px)
-    y2 = int(y + h) + int(padding_px)
-    if image_shape is not None:
-        height, width = image_shape[:2]
-        x1 = max(0, min(int(width) - 1, x1))
-        y1 = max(0, min(int(height) - 1, y1))
-        x2 = max(x1 + 1, min(int(width), x2))
-        y2 = max(y1 + 1, min(int(height), y2))
-    return int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+    return int(x), int(y), int(w), int(h)
 
 
 def _save_debug(
@@ -913,10 +899,8 @@ def _save_debug(
 ) -> str | None:
     if image is None or points is None:
         return None
-    # This blue rectangle is only for debug visualization. YOLO boxes can be
-    # tighter than the fitted quad, so draw a point-derived box that encloses
-    # all four final points.
-    bbox = _bbox_from_points(points, image_shape=image.shape, padding_px=4)
+    if bbox is None:
+        bbox = _bbox_from_points(points)
     detection = Detection(points, bbox, 0.0, 0.0, 0.0, 0.0)
     draw_debug(image, detection, path)
     return str(path)
