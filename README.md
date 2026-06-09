@@ -302,6 +302,12 @@ ssh -L 18082:127.0.0.1:18081 unitree@192.168.0.149
 http://127.0.0.1:18082/debug
 ```
 
+说明：
+
+- `/debug` 每刷新一次都会重新拍照、YOLO 推理并计算坐标。
+- 如果当前服务是 CPU 模式，刷新会明显慢一些；看 `/health` 里的 `resolved_device` 可以确认当前是 `cpu` 还是 `cuda:0`。
+- 页面图片会绑定本次请求的 `request_id`，避免浏览器缓存或连续刷新时看到旧图。
+
 更多说明见：
 
 - `docs/cigarette_pose_optical_api.md`

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import cv2
 import numpy as np
@@ -57,6 +57,10 @@ REQUEST_COUNTER = 0
 REQUEST_COUNTER_LOCK = threading.Lock()
 IMAGE_CLIENTS: dict[str, Any] = {}
 LATEST_RESULT: dict[str, Any] | None = None
+RESULT_CACHE: dict[str, dict[str, Any]] = {}
+RESULT_CACHE_ORDER: list[str] = []
+RESULT_CACHE_LOCK = threading.Lock()
+MAX_CACHED_RESULTS = 20
 
 OVERRIDE_TYPES: dict[str, type] = {
     "known_range_mm": float,
@@ -91,13 +95,47 @@ def _next_request_id() -> str:
     return f"{time.strftime('%Y%m%d_%H%M%S')}_{counter:04d}"
 
 
+def _remember_result(result: dict[str, Any]) -> None:
+    server = result.get("server")
+    if not isinstance(server, dict):
+        return
+    request_id = str(server.get("request_id") or "")
+    if not request_id:
+        return
+    with RESULT_CACHE_LOCK:
+        if request_id not in RESULT_CACHE:
+            RESULT_CACHE_ORDER.append(request_id)
+        RESULT_CACHE[request_id] = result
+        while len(RESULT_CACHE_ORDER) > MAX_CACHED_RESULTS:
+            old_request_id = RESULT_CACHE_ORDER.pop(0)
+            RESULT_CACHE.pop(old_request_id, None)
+
+
+def _cached_result_for_request(handler: BaseHTTPRequestHandler) -> dict[str, Any] | None:
+    parsed = urlparse(handler.path)
+    query = parse_qs(parsed.query)
+    request_ids = query.get("request_id") or query.get("rid") or []
+    request_id = request_ids[-1] if request_ids else ""
+    if not request_id:
+        return LATEST_RESULT
+    with RESULT_CACHE_LOCK:
+        return RESULT_CACHE.get(request_id)
+
+
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
+    _send_no_cache_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
+
+
+def _send_no_cache_headers(handler: BaseHTTPRequestHandler) -> None:
+    handler.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+    handler.send_header("Pragma", "no-cache")
+    handler.send_header("Expires", "0")
 
 
 def _file_response(handler: BaseHTTPRequestHandler, status: int, path: Path, content_type: str) -> None:
@@ -105,7 +143,7 @@ def _file_response(handler: BaseHTTPRequestHandler, status: int, path: Path, con
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-store")
+    _send_no_cache_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -114,7 +152,7 @@ def _bytes_response(handler: BaseHTTPRequestHandler, status: int, data: bytes, c
     handler.send_response(status)
     handler.send_header("Content-Type", content_type)
     handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-store")
+    _send_no_cache_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -124,7 +162,7 @@ def _html_response(handler: BaseHTTPRequestHandler, status: int, body: str) -> N
     handler.send_response(status)
     handler.send_header("Content-Type", "text/html; charset=utf-8")
     handler.send_header("Content-Length", str(len(data)))
-    handler.send_header("Cache-Control", "no-store")
+    _send_no_cache_headers(handler)
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -329,6 +367,7 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
     }
     result["server"] = server_info
     LATEST_RESULT = result
+    _remember_result(result)
     if compact:
         response = _compact_pose(result, exit_code)
         response["server"] = server_info
@@ -526,7 +565,7 @@ def _serve_debug_image(
         status, payload = _run_pose_request(config, compact=False, overrides=overrides)
     else:
         status = 200
-        payload = LATEST_RESULT
+        payload = _cached_result_for_request(handler)
     if not isinstance(payload, dict):
         _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug/left_points.jpg first"})
         return
@@ -631,7 +670,7 @@ def _serve_candidate_image(
         status, payload = _run_pose_request(config, compact=False, overrides=overrides)
     else:
         status = 200
-        payload = LATEST_RESULT
+        payload = _cached_result_for_request(handler)
     if not isinstance(payload, dict):
         _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug first"})
         return
@@ -656,7 +695,7 @@ def _serve_projected_image(
         status, payload = _run_pose_request(config, compact=False, overrides=overrides)
     else:
         status = 200
-        payload = LATEST_RESULT
+        payload = _cached_result_for_request(handler)
     if not isinstance(payload, dict):
         _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug first"})
         return
@@ -712,20 +751,31 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     selected_text = html_lib.escape(json.dumps(selected_left, ensure_ascii=False, indent=2))
     ok_text = html_lib.escape(str(payload.get("ok")))
     error_text = html_lib.escape(str(payload.get("error") or ""))
-    request_id = html_lib.escape(str(server.get("request_id") or ""))
+    request_id_raw = str(server.get("request_id") or "")
+    request_id = html_lib.escape(request_id_raw)
     elapsed_ms = html_lib.escape(str(server.get("elapsed_ms") or ""))
+    cache_token = quote(f"{request_id_raw}_{time.time_ns()}")
+    if request_id_raw:
+        image_query = f"?request_id={quote(request_id_raw)}&t={cache_token}"
+    else:
+        image_query = f"?t={cache_token}"
+
+    def image_src(path: str) -> str:
+        return html_lib.escape(path + image_query)
+
     image_cards = "\n".join(
         [
-            '<section><h2>Left Input</h2><img src="/latest/left_input.jpg" alt="left input"></section>',
-            '<section><h2>Left Points</h2><img src="/latest/left_points.jpg" alt="left points"></section>',
-            '<section><h2>Left Above Points</h2><img src="/latest/left_projected.jpg" alt="left projected above points"></section>',
-            '<section class="wide"><h2>Left Above Points Zoom</h2><img src="/latest/left_projected_zoom.jpg" alt="left projected above points zoom"></section>',
-            '<section><h2>Left All Candidates</h2><img src="/latest/left_candidates.jpg" alt="left candidates"></section>',
-            '<section><h2>Right Input</h2><img src="/latest/right_input.jpg" alt="right input"></section>',
-            '<section><h2>Right Points</h2><img src="/latest/right_points.jpg" alt="right points"></section>',
-            '<section><h2>Right All Candidates</h2><img src="/latest/right_candidates.jpg" alt="right candidates"></section>',
+            f'<section><h2>Left Input</h2><img src="{image_src("/latest/left_input.jpg")}" alt="left input"></section>',
+            f'<section><h2>Left Points</h2><img src="{image_src("/latest/left_points.jpg")}" alt="left points"></section>',
+            f'<section><h2>Left Above Points</h2><img src="{image_src("/latest/left_projected.jpg")}" alt="left projected above points"></section>',
+            f'<section class="wide"><h2>Left Above Points Zoom</h2><img src="{image_src("/latest/left_projected_zoom.jpg")}" alt="left projected above points zoom"></section>',
+            f'<section><h2>Left All Candidates</h2><img src="{image_src("/latest/left_candidates.jpg")}" alt="left candidates"></section>',
+            f'<section><h2>Right Input</h2><img src="{image_src("/latest/right_input.jpg")}" alt="right input"></section>',
+            f'<section><h2>Right Points</h2><img src="{image_src("/latest/right_points.jpg")}" alt="right points"></section>',
+            f'<section><h2>Right All Candidates</h2><img src="{image_src("/latest/right_candidates.jpg")}" alt="right candidates"></section>',
         ]
     )
+    run_again_href = html_lib.escape(f"/debug?t={cache_token}")
     return f"""<!doctype html>
 <html>
 <head>
@@ -750,7 +800,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
 <body>
   <header>
     <h1>Cigarette Pose YOLO Debug</h1>
-    <a class="button" href="/debug">Run Again</a>
+    <a class="button" href="{run_again_href}">Run Again</a>
     <a class="button" href="/pose">JSON</a>
     <a class="button" href="/xyz">XYZ</a>
   </header>
