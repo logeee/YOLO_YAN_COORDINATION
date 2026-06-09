@@ -13,7 +13,30 @@
   - `+Y` 图像下方
   - `+Z` 相机前方/深度
 
-## 启动服务
+## 部署到机器人
+
+在机器人上拉取仓库：
+
+```bash
+cd ~
+git clone https://github.com/logeee/YOLO_YAN_COORDINATION.git
+cd ~/YOLO_YAN_COORDINATION
+```
+
+如果已经装过，更新到最新版：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+git pull
+```
+
+服务文件默认要求仓库路径是：
+
+```text
+/home/unitree/YOLO_YAN_COORDINATION
+```
+
+## 临时启动服务
 
 在机器人上进入仓库目录：
 
@@ -24,7 +47,13 @@ nohup bash scripts/cigarette_pose_yolo_server_gpu.sh \
 echo $! > /tmp/cigarette_pose_yolo_server.pid
 ```
 
-检查服务：
+临时停止：
+
+```bash
+kill $(cat /tmp/cigarette_pose_yolo_server.pid)
+```
+
+检查服务是否启动：
 
 ```bash
 curl -s http://127.0.0.1:18081/health
@@ -39,12 +68,20 @@ YOLO_DEVICE=cpu bash scripts/cigarette_pose_yolo_server_gpu.sh
 本地电脑和机器人在同一网络时，可以直接访问：
 
 ```text
-http://192.168.0.149:18081/debug
+http://<机器人IP>:18081/debug
+```
+
+例如当前 G1D 本体无线 IP：
+
+```text
+http://192.168.60.121:18081/debug
 ```
 
 ## 开机启动
 
-安装 systemd 服务：
+推荐正式部署时使用 systemd。这样机器人断电重启后，YOLO 坐标服务会自动恢复。
+
+安装并立即启动：
 
 ```bash
 cd ~/YOLO_YAN_COORDINATION
@@ -53,16 +90,100 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now cigarette-pose-yolo.service
 ```
 
-查看状态：
+确认已经设置为开机自启动：
+
+```bash
+systemctl is-enabled cigarette-pose-yolo.service
+```
+
+正常应该输出：
+
+```text
+enabled
+```
+
+确认当前正在运行：
+
+```bash
+systemctl is-active cigarette-pose-yolo.service
+```
+
+正常应该输出：
+
+```text
+active
+```
+
+查看详细状态：
 
 ```bash
 systemctl status cigarette-pose-yolo.service --no-pager
 ```
 
-查看日志：
+查看实时日志：
 
 ```bash
 journalctl -u cigarette-pose-yolo.service -f
+```
+
+重启服务：
+
+```bash
+sudo systemctl restart cigarette-pose-yolo.service
+```
+
+停止服务：
+
+```bash
+sudo systemctl stop cigarette-pose-yolo.service
+```
+
+取消开机自启动：
+
+```bash
+sudo systemctl disable --now cigarette-pose-yolo.service
+```
+
+## CPU / GPU 设备选择
+
+默认使用 GPU：
+
+```text
+YOLO_DEVICE=cuda:0
+```
+
+如果当前机器没有 CUDA PyTorch，可以给 systemd 加 CPU override：
+
+```bash
+sudo mkdir -p /etc/systemd/system/cigarette-pose-yolo.service.d
+sudo tee /etc/systemd/system/cigarette-pose-yolo.service.d/override.conf >/dev/null <<'EOF'
+[Service]
+Environment=YOLO_DEVICE=cpu
+EOF
+sudo systemctl daemon-reload
+sudo systemctl restart cigarette-pose-yolo.service
+```
+
+如果后续装好了 CUDA PyTorch，要切回 GPU：
+
+```bash
+sudo rm -f /etc/systemd/system/cigarette-pose-yolo.service.d/override.conf
+sudo systemctl daemon-reload
+sudo systemctl restart cigarette-pose-yolo.service
+```
+
+检查当前实际使用的设备：
+
+```bash
+curl -s http://127.0.0.1:18081/health
+```
+
+看返回里的：
+
+```text
+requested_device
+resolved_device
+cuda_available
 ```
 
 ## 取坐标
@@ -154,7 +275,13 @@ curl -s "http://127.0.0.1:18081/xyz?label=Liqun" \
 本地电脑和机器人在同一网络时，直接打开：
 
 ```text
-http://192.168.0.149:18081/debug
+http://<机器人IP>:18081/debug
+```
+
+例如当前 G1D 本体无线 IP：
+
+```text
+http://192.168.60.121:18081/debug
 ```
 
 机器人本机也可以打开：
