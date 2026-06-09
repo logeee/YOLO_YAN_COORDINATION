@@ -569,9 +569,6 @@ def _serve_debug_image(
     if not isinstance(payload, dict):
         _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug/left_points.jpg first"})
         return
-    if not bool(payload.get("ok")):
-        _json_response(handler, status, payload)
-        return
     image_key = DEBUG_IMAGE_KEYS[path]
     debug_images = payload.get("debug_images")
     if not isinstance(debug_images, dict) or image_key not in debug_images:
@@ -674,9 +671,6 @@ def _serve_candidate_image(
     if not isinstance(payload, dict):
         _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug first"})
         return
-    if not bool(payload.get("ok")):
-        _json_response(handler, status, payload)
-        return
     try:
         data = _draw_candidate_overlay(payload, path)
     except Exception as exc:
@@ -698,9 +692,6 @@ def _serve_projected_image(
         payload = _cached_result_for_request(handler)
     if not isinstance(payload, dict):
         _json_response(handler, 404, {"ok": False, "error": "no latest pose result yet; call /pose or /debug first"})
-        return
-    if not bool(payload.get("ok")):
-        _json_response(handler, status, payload)
         return
     try:
         data = _draw_projected_points_overlay(payload, path)
