@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=unitree
-WorkingDirectory=/home/unitree/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
 ExecStart=/bin/bash scripts/cigarette_pose_yolo_server_gpu.sh
 Restart=always
 RestartSec=3

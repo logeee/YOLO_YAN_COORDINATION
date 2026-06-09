@@ -18,7 +18,7 @@
 在机器人上进入仓库目录：
 
 ```bash
-cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+cd ~/YOLO_YAN_COORDINATION
 nohup bash scripts/cigarette_pose_yolo_server_gpu.sh \
   > /tmp/cigarette_pose_yolo_server.log 2>&1 &
 echo $! > /tmp/cigarette_pose_yolo_server.pid
@@ -28,6 +28,12 @@ echo $! > /tmp/cigarette_pose_yolo_server.pid
 
 ```bash
 curl -s http://127.0.0.1:18081/health
+```
+
+如果当前机器没有 CUDA PyTorch，可以临时用 CPU 启动：
+
+```bash
+YOLO_DEVICE=cpu bash scripts/cigarette_pose_yolo_server_gpu.sh
 ```
 
 本地电脑和机器人在同一网络时，可以直接访问：
@@ -41,7 +47,7 @@ http://192.168.0.149:18081/debug
 安装 systemd 服务：
 
 ```bash
-cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+cd ~/YOLO_YAN_COORDINATION
 sudo cp systemd/cigarette-pose-yolo.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now cigarette-pose-yolo.service

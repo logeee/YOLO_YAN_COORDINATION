@@ -448,7 +448,7 @@ bash scripts/cigarette_pose_yolo_gpu.sh
 等价的完整命令是：
 
 ```bash
-cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+cd ~/YOLO_YAN_COORDINATION
 source /home/unitree/venvs/tv_gpu/bin/activate
 PYTHONPATH="$PWD:$PWD/scripts" python scripts/cigarette_pose_optical_api.py \
   --capture \
@@ -466,15 +466,22 @@ PYTHONPATH="$PWD:$PWD/scripts" python scripts/cigarette_pose_optical_api.py \
 前台启动：
 
 ```bash
-cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+cd ~/YOLO_YAN_COORDINATION
 
 bash scripts/cigarette_pose_yolo_server_gpu.sh
+```
+
+如果当前机器没有 CUDA PyTorch，可以临时用 CPU 启动：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+YOLO_DEVICE=cpu bash scripts/cigarette_pose_yolo_server_gpu.sh
 ```
 
 后台启动：
 
 ```bash
-cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+cd ~/YOLO_YAN_COORDINATION
 
 nohup bash scripts/cigarette_pose_yolo_server_gpu.sh \
   > /tmp/cigarette_pose_yolo_server.log 2>&1 &
@@ -499,7 +506,7 @@ http://192.168.0.149:18081/debug
 开机自启动：
 
 ```bash
-cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+cd ~/YOLO_YAN_COORDINATION
 sudo cp systemd/cigarette-pose-yolo.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now cigarette-pose-yolo.service
