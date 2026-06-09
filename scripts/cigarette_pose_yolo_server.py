@@ -32,6 +32,7 @@ if str(SCRIPT_DIR) not in sys.path:
 from cigarette_pose_optical_api import build_arg_parser, run_pose  # noqa: E402
 from yolo_topface_detector import (  # noqa: E402
     YOLO_MODEL_CACHE,
+    _ensure_torchvision_nms,
     get_yolo_model,
     resolve_model_path,
     resolve_yolo_device,
@@ -871,6 +872,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
 def _warmup(config: ServerConfig) -> None:
     resolved_model = resolve_model_path(config.yolo_model)
     model = get_yolo_model(resolved_model, task="segment")
+    _ensure_torchvision_nms()
     blank = np.zeros((480, 640, 3), dtype=np.uint8)
     resolved_device = resolve_yolo_device(config.yolo_device)
     model.predict(

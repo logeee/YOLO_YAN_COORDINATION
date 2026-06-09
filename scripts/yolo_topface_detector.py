@@ -33,6 +33,7 @@ YOLO_SELECT_METHODS = (
     "index",
 )
 YOLO_MODEL_CACHE: dict[tuple[str, str], Any] = {}
+TORCHVISION_NMS_PATCHED = False
 
 
 def _points_list(points: np.ndarray) -> list[list[float]]:
@@ -74,6 +75,59 @@ def get_yolo_model(resolved_model: Path, task: str = "segment") -> Any:
             ) from exc
         YOLO_MODEL_CACHE[cache_key] = YOLO(str(resolved_model), task=task)
     return YOLO_MODEL_CACHE[cache_key]
+
+
+def _torch_nms_fallback(boxes: Any, scores: Any, iou_threshold: float) -> Any:
+    import torch
+
+    if boxes.numel() == 0:
+        return torch.empty((0,), dtype=torch.long, device=boxes.device)
+
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    areas = (x2 - x1).clamp(min=0) * (y2 - y1).clamp(min=0)
+    order = scores.argsort(descending=True)
+    keep: list[Any] = []
+
+    while order.numel() > 0:
+        index = order[0]
+        keep.append(index)
+        if order.numel() == 1:
+            break
+
+        rest = order[1:]
+        xx1 = torch.maximum(x1[index], x1[rest])
+        yy1 = torch.maximum(y1[index], y1[rest])
+        xx2 = torch.minimum(x2[index], x2[rest])
+        yy2 = torch.minimum(y2[index], y2[rest])
+        inter_w = (xx2 - xx1).clamp(min=0)
+        inter_h = (yy2 - yy1).clamp(min=0)
+        inter = inter_w * inter_h
+        union = areas[index] + areas[rest] - inter
+        iou = inter / union.clamp(min=1e-12)
+        order = rest[iou <= float(iou_threshold)]
+
+    return torch.stack(keep).to(dtype=torch.long)
+
+
+def _ensure_torchvision_nms() -> None:
+    global TORCHVISION_NMS_PATCHED
+    if TORCHVISION_NMS_PATCHED:
+        return
+    try:
+        import torch
+        import torchvision
+
+        boxes = torch.tensor([[0.0, 0.0, 1.0, 1.0]], device="cpu")
+        scores = torch.tensor([1.0], device="cpu")
+        torchvision.ops.nms(boxes, scores, 0.5)
+    except Exception:
+        import torchvision
+
+        torchvision.ops.nms = _torch_nms_fallback
+    TORCHVISION_NMS_PATCHED = True
 
 
 def _bbox_xyxy_to_xywh(xyxy: np.ndarray, image_shape: tuple[int, int, int]) -> tuple[int, int, int, int]:
@@ -181,6 +235,7 @@ def detect_yolo_points_from_image(
         raise RuntimeError(f"YOLO model not found: {resolved_model}")
 
     model = get_yolo_model(resolved_model, task="segment")
+    _ensure_torchvision_nms()
     resolved_device = resolve_yolo_device(device)
     predict_kwargs: dict[str, Any] = {
         "conf": float(conf),
