@@ -482,13 +482,40 @@ nohup bash scripts/cigarette_pose_yolo_server_gpu.sh \
 echo $! > /tmp/cigarette_pose_yolo_server.pid
 ```
 
-默认监听本机：
+默认监听所有网卡：
 
 ```text
-http://127.0.0.1:18081
+http://0.0.0.0:18081
 ```
 
 这里使用 `18081`，因为机器人上 `18080` 已被其它服务占用。
+
+本地电脑和机器人在同一网络时，可以直接打开：
+
+```text
+http://192.168.0.149:18081/debug
+```
+
+开机自启动：
+
+```bash
+cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+sudo cp systemd/cigarette-pose-yolo.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cigarette-pose-yolo.service
+```
+
+查看状态：
+
+```bash
+systemctl status cigarette-pose-yolo.service --no-pager
+```
+
+查看日志：
+
+```bash
+journalctl -u cigarette-pose-yolo.service -f
+```
 
 健康检查：
 
@@ -542,7 +569,13 @@ curl -s "http://127.0.0.1:18081/xyz?center_above_height_mm=80" | python3 -c "imp
 http://127.0.0.1:18081/debug
 ```
 
-如果你从本地电脑通过端口转发访问 `215`，浏览器打开：
+本地电脑和机器人在同一网络时，可以直接打开：
+
+```text
+http://192.168.0.149:18081/debug
+```
+
+如果网络不方便直接访问，也可以从本地电脑通过端口转发访问 `215`，浏览器打开：
 
 ```powershell
 ssh -L 18082:127.0.0.1:18081 unitree@192.168.0.215

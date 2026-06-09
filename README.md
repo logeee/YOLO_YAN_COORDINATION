@@ -7,7 +7,7 @@
 - 默认模型：`models/Liqun_Xiongmao.pt`
 - 支持类别：`XiongMao`、`Xizi_Liqun`
 - 默认设备：Jetson GPU `cuda:0`
-- 默认服务端口：`127.0.0.1:18081`
+- 默认服务地址：`0.0.0.0:18081`
 - 坐标系：`left_camera_optical`
   - `+X` 图像右方
   - `+Y` 图像下方
@@ -28,6 +28,35 @@ echo $! > /tmp/cigarette_pose_yolo_server.pid
 
 ```bash
 curl -s http://127.0.0.1:18081/health
+```
+
+本地电脑和机器人在同一网络时，可以直接访问：
+
+```text
+http://192.168.0.149:18081/debug
+```
+
+## 开机启动
+
+安装 systemd 服务：
+
+```bash
+cd ~/unifolm-world-model-action/robot_client_unitree_g1_full_20260509/repos/unitree_deploy
+sudo cp systemd/cigarette-pose-yolo.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cigarette-pose-yolo.service
+```
+
+查看状态：
+
+```bash
+systemctl status cigarette-pose-yolo.service --no-pager
+```
+
+查看日志：
+
+```bash
+journalctl -u cigarette-pose-yolo.service -f
 ```
 
 ## 取坐标
@@ -116,13 +145,19 @@ curl -s "http://127.0.0.1:18081/xyz?label=Liqun" \
 
 ## Debug 页面
 
-机器人本机：
+本地电脑和机器人在同一网络时，直接打开：
+
+```text
+http://192.168.0.149:18081/debug
+```
+
+机器人本机也可以打开：
 
 ```text
 http://127.0.0.1:18081/debug
 ```
 
-本地电脑 SSH 转发看 `149`：
+如果网络不方便直连，再用 SSH 转发看 `149`：
 
 ```powershell
 ssh -L 18082:127.0.0.1:18081 unitree@192.168.0.149

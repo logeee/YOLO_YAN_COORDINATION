@@ -186,10 +186,10 @@ curl -s "http://127.0.0.1:18081/xyz?yolo_select=leftmost&yolo_index=0"
 常驻服务的一页看全：
 
 ```text
-http://127.0.0.1:18081/debug
+http://192.168.0.149:18081/debug
 ```
 
-本地 SSH 转发看 `215`：
+如果网络不方便直接访问，也可以本地 SSH 转发看 `215`：
 
 ```powershell
 ssh -L 18082:127.0.0.1:18081 unitree@192.168.0.215
