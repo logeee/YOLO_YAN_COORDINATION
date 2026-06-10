@@ -44,6 +44,7 @@ from auto_pnp_cuboid_depth import (
     solve_depth,
 )
 from yolo_topface_detector import YOLO_SELECT_METHODS, detect_yolo_points_from_image
+from cigarette_pose_alignment import compute_robot_alignment
 
 
 ORIENTATIONS = ("long_x_short_y", "short_x_long_y")
@@ -1564,6 +1565,17 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         result["range_override"] = selected_left["range_override"]
     if focal_calibration is not None:
         result["focal_calibration"] = focal_calibration
+    try:
+        result["robot_alignment"] = compute_robot_alignment(
+            result,
+            camera_to_vertical_deg=args.camera_to_vertical_deg,
+            target_key="center_xyz_mm",
+        )
+    except Exception as exc:
+        result["robot_alignment"] = {
+            "ok": False,
+            "error": str(exc),
+        }
     if warnings:
         result["warnings"] = warnings
     if not left_ok:

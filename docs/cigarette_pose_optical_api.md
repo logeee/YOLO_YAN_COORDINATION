@@ -1046,3 +1046,68 @@ box_head_point_above_xyz_mm 该候选头部 1/5 点上方 10cm 坐标
 ```
 
 `label=Liqun` 会匹配模型类别名 `Xizi_Liqun`；也可以直接传完整类别名。没有匹配到对应标签时，接口会返回错误，并列出当前画面中 YOLO 检到的可用标签。
+
+## 烟盒方向、距离和 G1D 微调参考量
+
+`/pose` 和 `/xyz` 会返回 `robot_alignment`。这个字段把左目 optical 坐标转换成后续控制更容易使用的几何量：目标相对机器人前方偏几度、地面前向距离、左右偏差、垂直高度，以及烟盒长轴偏角。
+
+查看完整 `robot_alignment`：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['robot_alignment'], ensure_ascii=False, indent=2))"
+```
+
+只打印后续控制最常用的几项：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); a=d['robot_alignment']; t=a['target']; c=a['control_hint']; print('range_mm=', t['range_from_left_camera_mm'], 'forward_m=', c['forward_distance_m'], 'right_m=', c['lateral_error_m'], 'turn_deg=', c['turn_first_yaw_deg'], 'box_yaw_deg=', c['box_parallel_yaw_deg'])"
+```
+
+字段解释：
+
+```text
+robot_alignment.target.range_from_left_camera_mm
+  左目光心到烟盒上表面中心点的直线距离。
+
+robot_alignment.target.ground_forward_mm
+  根据相机安装角 camera_to_vertical_deg，默认 42.4°，把中心点投影到地面前向后的距离。
+
+robot_alignment.target.right_mm
+  中心点相对左目 optical 原点向右的距离。正数表示目标在画面/机器人右侧。
+
+robot_alignment.target.bearing_right_deg
+  目标相对机器人正前方的偏右角度。正数表示目标在右侧。
+
+robot_alignment.target.cmd_vel_yaw_to_center_deg
+  如果 ROS `angular.z` 正号按左转理解，那么朝目标中心转动时可参考这个角度。
+
+robot_alignment.box_axis.axis_yaw_mod180_deg
+  烟盒长轴投影到地面后的无向偏角，范围约为 [-90, 90)。这个值忽略头尾，只表示烟盒整体斜了多少度。
+
+robot_alignment.control_hint.forward_distance_m
+  后续给 G1D SDK 做前后距离闭环的参考值。
+
+robot_alignment.control_hint.lateral_error_m
+  横向误差。当前 SDK 的 C++ 示例里 `client.Move(vx, 0, yaw)` 没有把横移传下去，所以先作为误差量保留。
+
+robot_alignment.control_hint.height_down_m
+  目标相对相机的垂直向下距离，可用于高度微调或手臂预位。
+```
+
+`scripts/cigarette_pose_alignment.py` 也可以单独使用。默认会请求本机常驻服务的 `/pose`：
+
+```bash
+python3 scripts/cigarette_pose_alignment.py --pretty
+```
+
+如果要请求机器人 IP：
+
+```bash
+python3 scripts/cigarette_pose_alignment.py \
+  --url http://192.168.60.121:18081/pose \
+  --pretty
+```
+
+注意：这一步只输出控制前的几何参考量，不会发布 `/cmd_vel`，也不会让机器人移动。G1D SDK 当前默认订阅 `/cmd_vel`，并把 `Twist.linear.x` 映射为前后速度、`Twist.angular.z` 映射为转向速度；真正运动时还需要单独做限速、停止条件和 odom 闭环。

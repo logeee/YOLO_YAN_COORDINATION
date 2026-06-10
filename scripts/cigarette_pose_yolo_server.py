@@ -331,6 +331,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "box_head_one_third": result.get("box_head_one_third"),
         "box_head_one_third_above_xyz_mm": result.get("box_head_one_third_above_xyz_mm"),
         "box_head_one_third_above": result.get("box_head_one_third_above"),
+        "robot_alignment": result.get("robot_alignment"),
         "device": _device_from_result(result),
         "debug_images": result.get("debug_images"),
         "error_code": result.get("error_code"),

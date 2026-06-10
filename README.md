@@ -270,6 +270,47 @@ curl -s "http://127.0.0.1:18081/xyz?label=Liqun" \
   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['center_above_xyz_mm'])"
 ```
 
+## 方向、距离和机器人微调量
+
+`/xyz` 会返回 `robot_alignment`，这是根据 YOLO/PnP 的四点和中心点换算出来的机器人微调参考量。它只做感知计算，不会直接发布运动命令。
+
+直接查看完整结果：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['robot_alignment'], ensure_ascii=False, indent=2))"
+```
+
+只打印最常用的角度和距离：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); a=d['robot_alignment']; t=a['target']; c=a['control_hint']; print('range_mm=', t['range_from_left_camera_mm'], 'forward_m=', c['forward_distance_m'], 'right_m=', c['lateral_error_m'], 'turn_deg=', c['turn_first_yaw_deg'], 'box_yaw_deg=', c['box_parallel_yaw_deg'])"
+```
+
+常用字段：
+
+```text
+robot_alignment.target.range_from_left_camera_mm   左目光心到上表面中心点的直线距离
+robot_alignment.target.ground_forward_mm           按相机安装角 42.4° 投影后的地面前向距离
+robot_alignment.target.right_mm                    目标相对左目/机器人向右的偏差
+robot_alignment.target.bearing_right_deg           目标相对正前方偏右多少度
+robot_alignment.target.cmd_vel_yaw_to_center_deg   要先朝目标转多少度，正号按 ROS angular.z 左转约定
+robot_alignment.box_axis.axis_yaw_mod180_deg       烟盒长轴相对机器人正前方的无向夹角
+robot_alignment.control_hint.forward_distance_m    后续 SDK 可用的前进距离参考
+robot_alignment.control_hint.lateral_error_m       横向误差参考，当前 G1D SDK 没有直接传 lateral Move
+robot_alignment.control_hint.height_down_m         目标相对相机的垂直向下距离参考
+```
+
+G1D ROS1 SDK 里默认订阅 `/cmd_vel`。当前 SDK 代码实际把 `Twist.linear.x` 作为前后速度、`Twist.angular.z` 作为转向速度传给底层 `Move(vx, 0, yaw)`，所以这一版先输出角度和距离，不自动动机器人。后面做闭环时建议：
+
+```text
+先用 turn_first_yaw_deg / turn_first_yaw_rad 修正朝向
+再用 forward_distance_m 做前后距离闭环
+height_down_m 用于手臂或机身高度微调
+box_parallel_yaw_deg 用于让机器人或末端执行器和烟盒长轴对齐
+```
+
 ## Debug 页面
 
 本地电脑和机器人在同一网络时，直接打开：
