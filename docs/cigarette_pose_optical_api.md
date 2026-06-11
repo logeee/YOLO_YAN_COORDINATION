@@ -1166,6 +1166,9 @@ near_edge_midpoint.edge_point_indices
 
 near_edge_robot_alignment.target.ground_forward_mm
   这条近端边中点投影到地面前向后的距离。底盘前后微调用这个值，默认目标是 200mm。
+
+robot_alignment.target.vertical_down_mm
+  左目相机原点到烟盒上表面中心点沿地面垂直方向的分量。YOLO debug 页面里显示为“中心垂直距离”。
 ```
 
 ## G1D 微调服务

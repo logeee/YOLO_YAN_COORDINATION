@@ -826,6 +826,7 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
         _summary_tile("近端边前向", _fmt_number(near_target.get("ground_forward_mm"), " mm", 1), "微调目标建议 200mm"),
         _summary_tile("直线距离", _fmt_number(target.get("range_from_left_camera_mm"), " mm", 1), "左目光心到中心点"),
         _summary_tile("地面前向", _fmt_number(target.get("ground_forward_mm"), " mm", 1), "Z*sin角度 - Y*cos角度"),
+        _summary_tile("中心垂直距离", _fmt_number(target.get("vertical_down_mm"), " mm", 1), "沿地面垂直方向到上表面中心"),
         _summary_tile("地面平面距离", _fmt_number(target.get("ground_distance_mm"), " mm", 1), "sqrt(前向² + 左右²)"),
         _summary_tile("相机角度", _fmt_number(camera_angle, " deg", 1), "当前用于地面投影"),
         _summary_tile(
@@ -875,6 +876,7 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
             f"<td>{html_lib.escape(_fmt_number(item.get('range_from_left_camera_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(near_target.get('ground_forward_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(target.get('ground_forward_mm'), ' mm', 1))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(target.get('vertical_down_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(target.get('right_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(control.get('turn_first_yaw_deg'), ' deg', 2))}</td>"
             f"<td>{html_lib.escape(_fmt_number(control.get('box_parallel_yaw_deg'), ' deg', 2))}</td>"
@@ -885,7 +887,7 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
     return (
         "<table>"
         "<thead><tr><th>选中</th><th>长边对应哪组点</th><th>上表面尺寸</th><th>直线距离</th>"
-        "<th>近端边前向</th><th>中心前向</th><th>左右偏差</th><th>朝目标转角</th><th>烟盒长轴角</th>"
+        "<th>近端边前向</th><th>中心前向</th><th>中心垂直距离</th><th>左右偏差</th><th>朝目标转角</th><th>烟盒长轴角</th>"
         "<th>重投影误差</th><th>左右深度差</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
