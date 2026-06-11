@@ -372,100 +372,13 @@ http://127.0.0.1:18082/debug
 
 ## G1D 位置微调服务
 
-YOLO 服务只负责识别和给坐标；微调底盘另起一个服务，默认端口 `18084`，不会混进 YOLO 服务里。
+微调服务单独跑在 `18084`，YOLO 服务仍然跑在 `18081`。
 
-微调逻辑：
-
-```text
-1. 读取 YOLO /xyz。
-2. 先看烟盒长轴角 box_parallel_yaw_deg，先转动底盘让长轴角接近 0。
-3. 长轴角满足阈值后，再看靠近机器人那条边的中点 near_edge_midpoint。
-4. 用 near_edge_robot_alignment.target.ground_forward_mm 作为前后距离。
-5. 目标距离默认是 200mm。
-6. 推荐直接调用 /adjust，一次 API 内部只读取一次 YOLO 结果，然后按这一次结果发一批控制。
-7. /step 仍然保留，用于只执行一个小动作的手动调试。
-```
-
-YOLO debug 页面已经显示：
-
-```text
-近端边中点
-近端边前向
-中心垂直距离
-```
-
-`近端边前向` 就是后续底盘前进/后退要追到 `200mm` 的量，不再用中心点前向距离。
-`中心垂直距离` 是左目相机原点到烟盒上表面中心点沿地面垂直方向的分量。
-
-手动启动：
+手动启动或重启：
 
 ```bash
 cd ~/YOLO_YAN_COORDINATION
 bash scripts/g1d_pose_adjust_service.sh
-```
-
-查看服务状态：
-
-```bash
-curl -s http://127.0.0.1:18084/health
-```
-
-只看计划，不会动机器人：
-
-```bash
-curl -s http://127.0.0.1:18084/plan
-```
-
-一键微调预检，不会动机器人：
-
-```bash
-curl -s "http://127.0.0.1:18084/adjust?dry_run=1"
-```
-
-一键微调，会真的调用底盘 SDK。它只做一次计算，然后按这次计算结果依次发转向和前后移动控制；不会在中途重新拍照判断：
-
-```bash
-curl -s http://127.0.0.1:18084/adjust
-```
-
-如果在同一局域网电脑上访问 149 机器人：
-
-```bash
-curl -s "http://192.168.60.121:18084/adjust?dry_run=1"
-curl -s http://192.168.60.121:18084/adjust
-```
-
-看下一步会做什么，但不执行：
-
-```bash
-curl -s http://127.0.0.1:18084/step
-```
-
-确认执行一个小步：
-
-```bash
-curl -s "http://127.0.0.1:18084/step?confirm=1"
-```
-
-紧急停止：
-
-```bash
-curl -s "http://127.0.0.1:18084/stop?confirm=1"
-```
-
-临时修改目标距离，比如改成 `220mm`：
-
-```bash
-curl -s "http://127.0.0.1:18084/plan?target_near_edge_forward_mm=220"
-curl -s "http://127.0.0.1:18084/adjust?target_near_edge_forward_mm=220"
-```
-
-临时指定 YOLO 标签：
-
-```bash
-curl -s "http://127.0.0.1:18084/plan?label=XiongMao"
-curl -s "http://127.0.0.1:18084/plan?label=Xizi_Liqun"
-curl -s "http://127.0.0.1:18084/adjust?label=XiongMao"
 ```
 
 开机自启动：
@@ -476,18 +389,40 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now g1d-pose-adjust.service
 ```
 
-日志：
+检查：
 
 ```bash
-journalctl -u g1d-pose-adjust.service -f
+systemctl is-enabled g1d-pose-adjust.service
+systemctl is-active g1d-pose-adjust.service
+curl -s http://127.0.0.1:18084/health
 ```
 
-底层命令来自 `~/unitree_sdk2/build/bin/g1d_simple_control`，默认使用 `eth0`：
+一键微调预检，不会动机器人：
 
-```text
-turn_left / turn_right  用于让烟盒长轴角接近 0
-forward / back          用于让近端边前向距离接近 200mm
-stop                    停止
+```bash
+curl -s "http://127.0.0.1:18084/adjust?dry_run=1"
+curl -s "http://192.168.60.121:18084/adjust?dry_run=1"
 ```
 
-控制时长按物理量计算：转向用 `角度(rad) / turn_speed`，前后移动用 `距离(m) / drive_speed`，默认单条命令最长 `5s`。因为 `/adjust` 是先转向再前进，但只拍一次照，所以会先用确定性旋转公式预测转向后的近端边前向距离，返回里的 `control_distance_error_mm` 才是实际用于 `forward/back` 的距离误差。
+一键微调，会真的调用底盘 SDK：
+
+```bash
+curl -s http://127.0.0.1:18084/adjust
+curl -s http://192.168.60.121:18084/adjust
+```
+
+紧急停止：
+
+```bash
+curl -s "http://127.0.0.1:18084/stop?confirm=1"
+```
+
+常用参数：
+
+```bash
+curl -s "http://127.0.0.1:18084/adjust?target_near_edge_forward_mm=220"
+curl -s "http://127.0.0.1:18084/adjust?label=XiongMao"
+curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
+```
+
+更多说明见 `docs/G1D_POSE_ADJUST_SERVICE.md`。
