@@ -812,6 +812,7 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
         _summary_tile("中心上方点", _fmt_list(payload.get("center_above_xyz_mm")), "默认中心点上方 100mm"),
         _summary_tile("直线距离", _fmt_number(target.get("range_from_left_camera_mm"), " mm", 1), "左目光心到中心点"),
         _summary_tile("地面前向", _fmt_number(target.get("ground_forward_mm"), " mm", 1), "Z*sin角度 - Y*cos角度"),
+        _summary_tile("地面平面距离", _fmt_number(target.get("ground_distance_mm"), " mm", 1), "sqrt(前向² + 左右²)"),
         _summary_tile("相机角度", _fmt_number(camera_angle, " deg", 1), "当前用于地面投影"),
         _summary_tile(
             "前向公式输入",
