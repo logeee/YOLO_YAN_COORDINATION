@@ -1181,16 +1181,39 @@ robot_alignment.target.vertical_down_mm
 curl -s http://127.0.0.1:18084/plan
 ```
 
+一键微调预检，不会动机器人：
+
+```bash
+curl -s "http://127.0.0.1:18084/adjust?dry_run=1"
+```
+
+一键微调，会真的调用底盘 SDK：
+
+```bash
+curl -s http://127.0.0.1:18084/adjust
+```
+
 确认执行一个小步：
 
 ```bash
 curl -s "http://127.0.0.1:18084/step?confirm=1"
 ```
 
-微调服务每次只做一个动作：
+推荐使用 `/adjust`，它会在一次 API 调用里完成两个阶段：
+
+```text
+1. 先根据 box_parallel_yaw_deg 执行 turn_left / turn_right。
+2. 转向后等待短暂稳定时间，然后重新读取 YOLO /xyz。
+3. 再根据 near_edge_robot_alignment.target.ground_forward_mm 执行 forward / back。
+4. 近端边前向距离默认目标是 200mm。
+```
+
+`/step?confirm=1` 只执行一个动作，主要用于人工调试：
 
 ```text
 1. 如果烟盒长轴角还没接近 0，先 turn_left / turn_right。
 2. 如果长轴角已经满足阈值，再用 near_edge_robot_alignment.target.ground_forward_mm 调 forward / back。
 3. 近端边前向距离默认目标是 200mm。
 ```
+
+更多微调服务说明见 `docs/G1D_POSE_ADJUST_SERVICE.md`。

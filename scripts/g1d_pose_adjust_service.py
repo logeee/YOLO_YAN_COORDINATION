@@ -2,14 +2,14 @@
 """Small HTTP service for G1D base pose micro-adjustment.
 
 This service is intentionally separate from the YOLO pose service. It reads
-YOLO /xyz, builds one safe adjustment step, and only executes when confirm=1.
+YOLO /xyz, builds small base-control commands, and exposes both single-step
+and combined adjustment endpoints.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import subprocess
 import time
 import urllib.parse
@@ -39,6 +39,8 @@ class AdjustConfig:
     max_duration_sec: float = 0.5
     turn_duration_per_deg: float = 0.035
     drive_duration_per_mm: float = 0.004
+    settle_after_turn_sec: float = 0.25
+    settle_after_drive_sec: float = 0.25
     request_timeout_sec: float = 8.0
 
 
@@ -54,6 +56,8 @@ OVERRIDE_TYPES: dict[str, type] = {
     "max_duration_sec": float,
     "turn_duration_per_deg": float,
     "drive_duration_per_mm": float,
+    "settle_after_turn_sec": float,
+    "settle_after_drive_sec": float,
 }
 
 
@@ -89,7 +93,7 @@ def _request_values(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         normalized = key.replace("-", "_")
         if normalized in OVERRIDE_TYPES and raw_values:
             values[normalized] = OVERRIDE_TYPES[normalized](raw_values[-1])
-        elif normalized in ("confirm", "execute") and raw_values:
+        elif normalized in ("confirm", "execute", "dry_run") and raw_values:
             values[normalized] = _parse_bool(raw_values[-1])
 
     length = int(handler.headers.get("Content-Length") or 0)
@@ -102,7 +106,7 @@ def _request_values(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             normalized = key.replace("-", "_")
             if normalized in OVERRIDE_TYPES:
                 values[normalized] = OVERRIDE_TYPES[normalized](value)
-            elif normalized in ("confirm", "execute"):
+            elif normalized in ("confirm", "execute", "dry_run"):
                 values[normalized] = _parse_bool(value)
     return values
 
@@ -118,6 +122,8 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
         "max_duration_sec",
         "turn_duration_per_deg",
         "drive_duration_per_mm",
+        "settle_after_turn_sec",
+        "settle_after_drive_sec",
     }
     updates = {key: values[key] for key in allowed if key in values}
     return replace(config, **updates)
@@ -153,13 +159,12 @@ def _duration_for_error(error: float, per_unit: float, config: AdjustConfig) -> 
     return round(_clamp(duration, config.min_duration_sec, config.max_duration_sec), 3)
 
 
-def build_plan(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
+def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
     if not pose.get("ok"):
         return {
             "ok": False,
             "error": pose.get("error") or "YOLO pose is not ok",
             "pose_ok": False,
-            "command": None,
         }
 
     yaw_deg = _nested(pose, "robot_alignment", "control_hint", "box_parallel_yaw_deg")
@@ -167,42 +172,13 @@ def build_plan(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
     center_forward_mm = _nested(pose, "robot_alignment", "target", "ground_forward_mm")
     near_xyz = pose.get("near_edge_midpoint_xyz_mm")
     if yaw_deg is None:
-        return {"ok": False, "error": "missing robot_alignment.control_hint.box_parallel_yaw_deg", "command": None}
+        return {"ok": False, "error": "missing robot_alignment.control_hint.box_parallel_yaw_deg"}
     if near_forward_mm is None:
-        return {"ok": False, "error": "missing near_edge_robot_alignment.target.ground_forward_mm", "command": None}
+        return {"ok": False, "error": "missing near_edge_robot_alignment.target.ground_forward_mm"}
 
     yaw_deg = float(yaw_deg)
     near_forward_mm = float(near_forward_mm)
     distance_error_mm = near_forward_mm - float(config.target_near_edge_forward_mm)
-
-    command: dict[str, Any] | None = None
-    if abs(yaw_deg) > float(config.yaw_tolerance_deg):
-        action = "turn_left" if yaw_deg > 0.0 else "turn_right"
-        command = {
-            "phase": "align_box_long_axis",
-            "action": action,
-            "speed": round(float(config.turn_speed), 3),
-            "duration_sec": _duration_for_error(yaw_deg, config.turn_duration_per_deg, config),
-            "reason": "make box_parallel_yaw_deg close to 0",
-            "error_deg": round(yaw_deg, 3),
-        }
-    elif abs(distance_error_mm) > float(config.distance_tolerance_mm):
-        action = "forward" if distance_error_mm > 0.0 else "back"
-        command = {
-            "phase": "adjust_near_edge_forward_distance",
-            "action": action,
-            "speed": round(float(config.drive_speed), 3),
-            "duration_sec": _duration_for_error(distance_error_mm, config.drive_duration_per_mm, config),
-            "reason": "make near-edge forward distance close to target",
-            "error_mm": round(distance_error_mm, 1),
-        }
-    else:
-        command = {
-            "phase": "done",
-            "action": "none",
-            "reason": "yaw and near-edge forward distance are within tolerance",
-        }
-
     return {
         "ok": True,
         "pose_ok": True,
@@ -218,8 +194,56 @@ def build_plan(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
             "yaw_tolerance_deg": round(float(config.yaw_tolerance_deg), 3),
             "distance_tolerance_mm": round(float(config.distance_tolerance_mm), 1),
         },
-        "command": command,
     }
+
+
+def _yaw_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any] | None:
+    yaw_deg = float(metrics["box_parallel_yaw_deg"])
+    if abs(yaw_deg) <= float(config.yaw_tolerance_deg):
+        return None
+    action = "turn_left" if yaw_deg > 0.0 else "turn_right"
+    return {
+        "phase": "align_box_long_axis",
+        "action": action,
+        "speed": round(float(config.turn_speed), 3),
+        "duration_sec": _duration_for_error(yaw_deg, config.turn_duration_per_deg, config),
+        "reason": "make box_parallel_yaw_deg close to 0",
+        "error_deg": round(yaw_deg, 3),
+    }
+
+
+def _distance_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any] | None:
+    distance_error_mm = float(metrics["distance_error_mm"])
+    if abs(distance_error_mm) <= float(config.distance_tolerance_mm):
+        return None
+    action = "forward" if distance_error_mm > 0.0 else "back"
+    return {
+        "phase": "adjust_near_edge_forward_distance",
+        "action": action,
+        "speed": round(float(config.drive_speed), 3),
+        "duration_sec": _duration_for_error(distance_error_mm, config.drive_duration_per_mm, config),
+        "reason": "make near-edge forward distance close to target",
+        "error_mm": round(distance_error_mm, 1),
+    }
+
+
+def build_plan(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
+    metrics = _pose_metrics(pose, config)
+    if not metrics.get("ok"):
+        metrics["command"] = None
+        return metrics
+    command = _yaw_command(metrics, config)
+    if command is None:
+        command = _distance_command(metrics, config)
+    if command is None:
+        command = {
+            "phase": "done",
+            "action": "none",
+            "reason": "yaw and near-edge forward distance are within tolerance",
+        }
+    plan = dict(metrics)
+    plan["command"] = command
+    return plan
 
 
 def _command_argv(config: AdjustConfig, command: dict[str, Any]) -> list[str]:
@@ -239,7 +263,7 @@ def _command_argv(config: AdjustConfig, command: dict[str, Any]) -> list[str]:
 def execute_command(config: AdjustConfig, command: dict[str, Any]) -> dict[str, Any]:
     action = str(command.get("action") or "none")
     if action == "none":
-        return {"executed": False, "reason": "no movement needed"}
+        return {"ok": True, "executed": False, "reason": "no movement needed"}
     argv = _command_argv(config, command)
     started = time.perf_counter()
     completed = subprocess.run(
@@ -252,12 +276,102 @@ def execute_command(config: AdjustConfig, command: dict[str, Any]) -> dict[str, 
         check=False,
     )
     return {
+        "ok": completed.returncode == 0,
         "executed": True,
         "argv": argv,
         "returncode": completed.returncode,
         "stdout": completed.stdout,
         "stderr": completed.stderr,
         "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+    }
+
+
+def _execution_ok(execution: dict[str, Any] | None) -> bool:
+    return execution is not None and bool(execution.get("ok"))
+
+
+def _sequence_stage(
+    name: str,
+    pose: dict[str, Any],
+    metrics: dict[str, Any],
+    command: dict[str, Any] | None,
+    execution: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "stage": name,
+        "pose_ok": bool(pose.get("ok")),
+        "metrics": metrics,
+        "command": command or {"action": "none", "reason": "within tolerance"},
+        "execution": execution or {"executed": False, "reason": "no command"},
+    }
+
+
+def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    stages: list[dict[str, Any]] = []
+
+    pose = _fetch_pose(config, values)
+    metrics = _pose_metrics(pose, config)
+    if not metrics.get("ok"):
+        return {"ok": False, "dry_run": dry_run, "error": metrics.get("error"), "stages": stages}
+
+    yaw_cmd = _yaw_command(metrics, config)
+    yaw_execution = None
+    if yaw_cmd is not None:
+        yaw_execution = {"executed": False, "reason": "dry_run=1"} if dry_run else execute_command(config, yaw_cmd)
+    stages.append(_sequence_stage("turn", pose, metrics, yaw_cmd, yaw_execution))
+
+    if yaw_cmd is not None and dry_run:
+        stages.append(
+            _sequence_stage(
+                "forward_back",
+                pose,
+                metrics,
+                {"action": "pending_after_turn_refetch", "reason": "actual /adjust refetches YOLO after turn"},
+                {"executed": False, "reason": "dry_run=1"},
+            )
+        )
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
+            "stages": stages,
+            "final_plan": None,
+        }
+
+    if yaw_cmd is not None and not _execution_ok(yaw_execution):
+        return {"ok": False, "dry_run": dry_run, "error": "turn command failed", "stages": stages}
+
+    if yaw_cmd is not None and not dry_run:
+        time.sleep(float(config.settle_after_turn_sec))
+        pose = _fetch_pose(config, values)
+        metrics = _pose_metrics(pose, config)
+        if not metrics.get("ok"):
+            return {"ok": False, "dry_run": dry_run, "error": metrics.get("error"), "stages": stages}
+
+    distance_cmd = _distance_command(metrics, config)
+    distance_execution = None
+    if distance_cmd is not None:
+        distance_execution = (
+            {"executed": False, "reason": "dry_run=1"} if dry_run else execute_command(config, distance_cmd)
+        )
+    stages.append(_sequence_stage("forward_back", pose, metrics, distance_cmd, distance_execution))
+
+    if distance_cmd is not None and not dry_run and not _execution_ok(distance_execution):
+        return {"ok": False, "dry_run": dry_run, "error": "forward/back command failed", "stages": stages}
+
+    final_plan = None
+    if not dry_run:
+        if distance_cmd is not None:
+            time.sleep(float(config.settle_after_drive_sec))
+        final_pose = _fetch_pose(config, values)
+        final_plan = build_plan(final_pose, config)
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
+        "stages": stages,
+        "final_plan": final_plan,
     }
 
 
@@ -291,8 +405,8 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                             "yolo_xyz_url": config.yolo_xyz_url,
                             "sdk_build_dir": str(config.sdk_build_dir),
                             "interface": config.interface,
-                            "endpoints": ["/health", "/plan", "/step", "/stop"],
-                            "safety": "/plan never moves; /step and /stop require confirm=1",
+                            "endpoints": ["/health", "/plan", "/step", "/adjust", "/stop"],
+                            "safety": "/plan never moves; /adjust executes turn then forward/back; use /adjust?dry_run=1 to preview",
                         },
                     )
                     return
@@ -313,6 +427,11 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                         200 if plan.get("ok") else 500,
                         {"ok": bool(plan.get("ok")), "confirmed": confirm, "plan": plan, "execution": execution},
                     )
+                    return
+                if path == "/adjust":
+                    dry_run = bool(values.get("dry_run"))
+                    result = run_adjust_sequence(config, values, dry_run=dry_run)
+                    _json_response(self, 200 if result.get("ok") else 500, result)
                     return
                 if path == "/stop":
                     confirm = bool(values.get("confirm") or values.get("execute"))
@@ -345,6 +464,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-duration-sec", type=float, default=0.5)
     parser.add_argument("--turn-duration-per-deg", type=float, default=0.035)
     parser.add_argument("--drive-duration-per-mm", type=float, default=0.004)
+    parser.add_argument("--settle-after-turn-sec", type=float, default=0.25)
+    parser.add_argument("--settle-after-drive-sec", type=float, default=0.25)
     return parser
 
 
@@ -365,6 +486,8 @@ def main() -> int:
         max_duration_sec=args.max_duration_sec,
         turn_duration_per_deg=args.turn_duration_per_deg,
         drive_duration_per_mm=args.drive_duration_per_mm,
+        settle_after_turn_sec=args.settle_after_turn_sec,
+        settle_after_drive_sec=args.settle_after_drive_sec,
     )
     server = ThreadingHTTPServer((config.bind, config.port), make_handler(config))
     print(f"serving on http://{config.bind}:{config.port}", flush=True)

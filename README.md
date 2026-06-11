@@ -368,6 +368,7 @@ http://127.0.0.1:18082/debug
 
 - `docs/cigarette_pose_optical_api.md`
 - `docs/yolo_topface_detector_module.md`
+- `docs/G1D_POSE_ADJUST_SERVICE.md`
 
 ## G1D 位置微调服务
 
@@ -381,7 +382,8 @@ YOLO 服务只负责识别和给坐标；微调底盘另起一个服务，默认
 3. 长轴角满足阈值后，再看靠近机器人那条边的中点 near_edge_midpoint。
 4. 用 near_edge_robot_alignment.target.ground_forward_mm 作为前后距离。
 5. 目标距离默认是 200mm。
-6. 每次 /step 只执行一个小动作，执行后重新拍照再判断下一步。
+6. 推荐直接调用 /adjust，一次 API 内部会先转向，转完重新拍照，再做前进/后退。
+7. /step 仍然保留，用于只执行一个小动作的手动调试。
 ```
 
 YOLO debug 页面已经显示：
@@ -414,6 +416,25 @@ curl -s http://127.0.0.1:18084/health
 curl -s http://127.0.0.1:18084/plan
 ```
 
+一键微调预检，不会动机器人：
+
+```bash
+curl -s "http://127.0.0.1:18084/adjust?dry_run=1"
+```
+
+一键微调，会真的调用底盘 SDK：
+
+```bash
+curl -s http://127.0.0.1:18084/adjust
+```
+
+如果在同一局域网电脑上访问 149 机器人：
+
+```bash
+curl -s "http://192.168.60.121:18084/adjust?dry_run=1"
+curl -s http://192.168.60.121:18084/adjust
+```
+
 看下一步会做什么，但不执行：
 
 ```bash
@@ -436,6 +457,7 @@ curl -s "http://127.0.0.1:18084/stop?confirm=1"
 
 ```bash
 curl -s "http://127.0.0.1:18084/plan?target_near_edge_forward_mm=220"
+curl -s "http://127.0.0.1:18084/adjust?target_near_edge_forward_mm=220"
 ```
 
 临时指定 YOLO 标签：
@@ -443,6 +465,7 @@ curl -s "http://127.0.0.1:18084/plan?target_near_edge_forward_mm=220"
 ```bash
 curl -s "http://127.0.0.1:18084/plan?label=XiongMao"
 curl -s "http://127.0.0.1:18084/plan?label=Xizi_Liqun"
+curl -s "http://127.0.0.1:18084/adjust?label=XiongMao"
 ```
 
 开机自启动：
