@@ -38,6 +38,7 @@ class AdjustConfig:
     drive_speed: float = 0.1
     min_duration_sec: float = 0.15
     max_duration_sec: float = 5.0
+    turn_forward_compensation_gain: float = 0.6
     request_timeout_sec: float = 8.0
 
 
@@ -51,6 +52,7 @@ OVERRIDE_TYPES: dict[str, type] = {
     "drive_speed": float,
     "min_duration_sec": float,
     "max_duration_sec": float,
+    "turn_forward_compensation_gain": float,
 }
 
 
@@ -113,6 +115,7 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
         "drive_speed",
         "min_duration_sec",
         "max_duration_sec",
+        "turn_forward_compensation_gain",
     }
     updates = {key: values[key] for key in allowed if key in values}
     return replace(config, **updates)
@@ -165,6 +168,7 @@ def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
 
     yaw_deg = _nested(pose, "robot_alignment", "control_hint", "box_parallel_yaw_deg")
     near_forward_mm = _nested(pose, "near_edge_robot_alignment", "target", "ground_forward_mm")
+    near_right_mm = _nested(pose, "near_edge_robot_alignment", "target", "right_mm")
     center_forward_mm = _nested(pose, "robot_alignment", "target", "ground_forward_mm")
     near_xyz = pose.get("near_edge_midpoint_xyz_mm")
     if yaw_deg is None:
@@ -174,6 +178,8 @@ def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
 
     yaw_deg = float(yaw_deg)
     near_forward_mm = float(near_forward_mm)
+    if near_right_mm is None and isinstance(near_xyz, list) and near_xyz:
+        near_right_mm = near_xyz[0]
     distance_error_mm = near_forward_mm - float(config.target_near_edge_forward_mm)
     return {
         "ok": True,
@@ -182,6 +188,7 @@ def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
         "selected_orientation": pose.get("selected_orientation"),
         "box_parallel_yaw_deg": round(yaw_deg, 3),
         "near_edge_forward_mm": round(near_forward_mm, 1),
+        "near_edge_right_mm": _round(near_right_mm, 1),
         "center_forward_mm": _round(center_forward_mm, 1),
         "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
         "distance_error_mm": round(distance_error_mm, 1),
@@ -191,6 +198,37 @@ def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
             "distance_tolerance_mm": round(float(config.distance_tolerance_mm), 1),
         },
     }
+
+
+def _metrics_with_turn_forward_compensation(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
+    updated = dict(metrics)
+    raw_error_mm = float(metrics["distance_error_mm"])
+    updated["control_distance_error_mm"] = round(raw_error_mm, 1)
+    updated["turn_forward_compensation_mm"] = 0.0
+    updated["predicted_after_turn_forward_mm"] = metrics.get("near_edge_forward_mm")
+    updated["turn_forward_compensation_gain"] = round(float(config.turn_forward_compensation_gain), 3)
+
+    yaw_deg = float(metrics["box_parallel_yaw_deg"])
+    if abs(yaw_deg) <= float(config.yaw_tolerance_deg):
+        return updated
+
+    right_mm = metrics.get("near_edge_right_mm")
+    if right_mm is None:
+        return updated
+
+    gain = float(config.turn_forward_compensation_gain)
+    if gain == 0.0:
+        return updated
+
+    forward_mm = float(metrics["near_edge_forward_mm"])
+    yaw_rad = math.radians(yaw_deg)
+    predicted_forward_mm = forward_mm * math.cos(yaw_rad) - float(right_mm) * math.sin(yaw_rad)
+    compensation_mm = (predicted_forward_mm - forward_mm) * gain
+    control_error_mm = raw_error_mm + compensation_mm
+    updated["control_distance_error_mm"] = round(control_error_mm, 1)
+    updated["turn_forward_compensation_mm"] = round(compensation_mm, 1)
+    updated["predicted_after_turn_forward_mm"] = round(predicted_forward_mm, 1)
+    return updated
 
 
 def _yaw_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any] | None:
@@ -209,7 +247,7 @@ def _yaw_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any
 
 
 def _distance_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any] | None:
-    distance_error_mm = float(metrics["distance_error_mm"])
+    distance_error_mm = float(metrics.get("control_distance_error_mm", metrics["distance_error_mm"]))
     if abs(distance_error_mm) <= float(config.distance_tolerance_mm):
         return None
     action = "forward" if distance_error_mm > 0.0 else "back"
@@ -220,6 +258,9 @@ def _distance_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str
         "duration_sec": _duration_for_distance_mm(distance_error_mm, config),
         "reason": "make near-edge forward distance close to target",
         "error_mm": round(distance_error_mm, 1),
+        "raw_error_mm": metrics.get("distance_error_mm"),
+        "turn_forward_compensation_mm": metrics.get("turn_forward_compensation_mm", 0.0),
+        "predicted_after_turn_forward_mm": metrics.get("predicted_after_turn_forward_mm"),
     }
 
 
@@ -286,15 +327,16 @@ def _execution_ok(execution: dict[str, Any] | None) -> bool:
     return execution is not None and bool(execution.get("ok"))
 
 
-def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) -> list[dict[str, Any]]:
+def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     commands: list[dict[str, Any]] = []
     yaw_cmd = _yaw_command(metrics, config)
     if yaw_cmd is not None:
         commands.append(yaw_cmd)
-    distance_cmd = _distance_command(metrics, config)
+    control_metrics = _metrics_with_turn_forward_compensation(metrics, config)
+    distance_cmd = _distance_command(control_metrics, config)
     if distance_cmd is not None:
         commands.append(distance_cmd)
-    return commands
+    return commands, control_metrics
 
 
 def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
@@ -310,7 +352,7 @@ def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: b
             "final_plan": None,
         }
 
-    commands = _single_calculation_commands(metrics, config)
+    commands, control_metrics = _single_calculation_commands(metrics, config)
     executions: list[dict[str, Any]] = []
     if dry_run:
         executions = [{"executed": False, "reason": "dry_run=1"} for _command in commands]
@@ -336,7 +378,7 @@ def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: b
             {
                 "stage": "single_calculation_control",
                 "pose_ok": bool(pose.get("ok")),
-                "metrics": metrics,
+                "metrics": control_metrics,
                 "commands": commands,
                 "executions": executions,
             }
@@ -436,6 +478,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drive-speed", type=float, default=0.1)
     parser.add_argument("--min-duration-sec", type=float, default=0.15)
     parser.add_argument("--max-duration-sec", type=float, default=5.0)
+    parser.add_argument("--turn-forward-compensation-gain", type=float, default=0.6)
     return parser
 
 
@@ -454,6 +497,7 @@ def main() -> int:
         drive_speed=args.drive_speed,
         min_duration_sec=args.min_duration_sec,
         max_duration_sec=args.max_duration_sec,
+        turn_forward_compensation_gain=args.turn_forward_compensation_gain,
     )
     server = ThreadingHTTPServer((config.bind, config.port), make_handler(config))
     print(f"serving on http://{config.bind}:{config.port}", flush=True)

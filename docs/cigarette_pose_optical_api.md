@@ -1205,8 +1205,9 @@ curl -s "http://127.0.0.1:18084/step?confirm=1"
 1. 只读取一次 YOLO /xyz。
 2. 根据这一次 box_parallel_yaw_deg 计算 turn_left / turn_right。
 3. 根据这一次 near_edge_robot_alignment.target.ground_forward_mm 计算 forward / back。
-4. 按这一次计算结果依次发控制命令，不在中途重新拍照判断。
-5. 近端边前向距离默认目标是 200mm。
+4. forward/back 会使用 control_distance_error_mm，它在原始 distance_error_mm 基础上加了“转向后前向距离变化”的补偿。
+5. 按这一次计算结果依次发控制命令，不在中途重新拍照判断。
+6. 近端边前向距离默认目标是 200mm。
 ```
 
 `/step?confirm=1` 只执行一个动作，主要用于人工调试：

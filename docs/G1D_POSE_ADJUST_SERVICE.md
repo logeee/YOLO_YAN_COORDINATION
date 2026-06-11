@@ -118,6 +118,27 @@ curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 默认最长单条命令 5s，可用 max_duration_sec 临时修改
 ```
 
+因为 `/adjust` 是先转向再前进，但只拍一次照，所以前进距离会额外考虑“转向后近端边前向距离变化”的补偿：
+
+```text
+control_distance_error_mm = distance_error_mm + turn_forward_compensation_mm
+turn_forward_compensation_gain 默认 0.6
+```
+
+返回 JSON 里：
+
+```text
+distance_error_mm              原始近端边距离误差
+control_distance_error_mm      实际用于 forward/back 的距离误差
+turn_forward_compensation_mm   转向导致的前向距离补偿量
+```
+
+如果现场发现补偿过大或过小，可以临时调系数：
+
+```bash
+curl -s "http://127.0.0.1:18084/adjust?turn_forward_compensation_gain=0.5"
+```
+
 修改容差：
 
 ```bash
