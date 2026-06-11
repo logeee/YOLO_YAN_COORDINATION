@@ -205,6 +205,12 @@ def compute_robot_alignment(
             "xyz_mm": _round_list(target, 1),
             "right_mm": _round(target_right_mm, 1),
             "ground_forward_mm": _round(target_forward_mm, 1),
+            "ground_forward_formula": "z_mm*sin(camera_to_vertical_deg) - y_mm*cos(camera_to_vertical_deg)",
+            "ground_forward_formula_inputs": {
+                "y_mm": _round(target[1], 1),
+                "z_mm": _round(target[2], 1),
+                "camera_to_vertical_deg": _round(camera_to_vertical_deg, 3),
+            },
             "vertical_down_mm": _round(target_vertical_down_mm, 1),
             "ground_distance_mm": _round(target_ground_distance_mm, 1),
             "range_from_left_camera_mm": _round(range_mm_value, 1),

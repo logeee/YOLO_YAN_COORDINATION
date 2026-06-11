@@ -313,6 +313,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         "left_depth_mm": result.get("left_depth_mm"),
         "optical_axis_depth_mm": result.get("optical_axis_depth_mm"),
+        "selected_orientation": result.get("selected_orientation"),
         "requested_yolo_label": result.get("requested_yolo_label"),
         "selected_yolo_label": result.get("selected_yolo_label"),
         "selected_yolo_class_id": result.get("selected_yolo_class_id"),
@@ -756,9 +757,9 @@ def _fmt_list(values: Any, suffix: str = " mm") -> str:
 
 def _orientation_cn(value: Any) -> str:
     if value == "long_x_short_y":
-        return "长边=0-1/3-2"
+        return "图中 0-1 / 3-2 是长边"
     if value == "short_x_long_y":
-        return "长边=1-2/0-3"
+        return "图中 1-2 / 0-3 是长边"
     return str(value or "-")
 
 
@@ -799,14 +800,24 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
     label = payload.get("selected_yolo_label") or "-"
     confidence = payload.get("selected_yolo_confidence")
     selected = _orientation_cn(payload.get("selected_orientation"))
+    camera_angle = _nested(alignment, "camera_to_vertical_deg")
+    formula_inputs = target.get("ground_forward_formula_inputs")
+    if not isinstance(formula_inputs, dict):
+        formula_inputs = {}
 
     tiles = [
         _summary_tile("识别结果", f"{label} / conf {_fmt_number(confidence, '', 3)}", "当前用于计算的 YOLO 目标"),
-        _summary_tile("横竖假设", selected, "系统自动选中的物理长边方向"),
+        _summary_tile("长边判定", selected, "看左目四点图上的红色编号"),
         _summary_tile("中心点坐标", _fmt_list(payload.get("center_xyz_mm")), "left_camera_optical: X右 Y下 Z前"),
         _summary_tile("中心上方点", _fmt_list(payload.get("center_above_xyz_mm")), "默认中心点上方 100mm"),
         _summary_tile("直线距离", _fmt_number(target.get("range_from_left_camera_mm"), " mm", 1), "左目光心到中心点"),
-        _summary_tile("地面前向", _fmt_number(target.get("ground_forward_mm"), " mm", 1), "后续前进距离参考"),
+        _summary_tile("地面前向", _fmt_number(target.get("ground_forward_mm"), " mm", 1), "Z*sin角度 - Y*cos角度"),
+        _summary_tile("相机角度", _fmt_number(camera_angle, " deg", 1), "当前用于地面投影"),
+        _summary_tile(
+            "前向公式输入",
+            f"Y={_fmt_number(formula_inputs.get('y_mm'), '', 1)} Z={_fmt_number(formula_inputs.get('z_mm'), '', 1)}",
+            "单位 mm",
+        ),
         _summary_tile("左右偏差", _fmt_number(target.get("right_mm"), " mm", 1), "正数在机器人右侧"),
         _summary_tile("朝目标转角", _fmt_number(control.get("turn_first_yaw_deg"), " deg", 2), "负数通常向右转"),
         _summary_tile("烟盒长轴角", _fmt_number(control.get("box_parallel_yaw_deg"), " deg", 2), "末端/身体对齐烟盒参考"),
@@ -851,7 +862,7 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
         )
     return (
         "<table>"
-        "<thead><tr><th>选中</th><th>横/竖假设</th><th>上表面尺寸</th><th>直线距离</th>"
+        "<thead><tr><th>选中</th><th>长边对应哪组点</th><th>上表面尺寸</th><th>直线距离</th>"
         "<th>地面前向</th><th>左右偏差</th><th>朝目标转角</th><th>烟盒长轴角</th>"
         "<th>重投影误差</th><th>左右深度差</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
