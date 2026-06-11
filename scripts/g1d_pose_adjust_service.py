@@ -39,8 +39,6 @@ class AdjustConfig:
     max_duration_sec: float = 0.5
     turn_duration_per_deg: float = 0.035
     drive_duration_per_mm: float = 0.004
-    settle_after_turn_sec: float = 0.25
-    settle_after_drive_sec: float = 0.25
     request_timeout_sec: float = 8.0
 
 
@@ -56,8 +54,6 @@ OVERRIDE_TYPES: dict[str, type] = {
     "max_duration_sec": float,
     "turn_duration_per_deg": float,
     "drive_duration_per_mm": float,
-    "settle_after_turn_sec": float,
-    "settle_after_drive_sec": float,
 }
 
 
@@ -122,8 +118,6 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
         "max_duration_sec",
         "turn_duration_per_deg",
         "drive_duration_per_mm",
-        "settle_after_turn_sec",
-        "settle_after_drive_sec",
     }
     updates = {key: values[key] for key in allowed if key in values}
     return replace(config, **updates)
@@ -290,89 +284,67 @@ def _execution_ok(execution: dict[str, Any] | None) -> bool:
     return execution is not None and bool(execution.get("ok"))
 
 
-def _sequence_stage(
-    name: str,
-    pose: dict[str, Any],
-    metrics: dict[str, Any],
-    command: dict[str, Any] | None,
-    execution: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "stage": name,
-        "pose_ok": bool(pose.get("ok")),
-        "metrics": metrics,
-        "command": command or {"action": "none", "reason": "within tolerance"},
-        "execution": execution or {"executed": False, "reason": "no command"},
-    }
+def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) -> list[dict[str, Any]]:
+    commands: list[dict[str, Any]] = []
+    yaw_cmd = _yaw_command(metrics, config)
+    if yaw_cmd is not None:
+        commands.append(yaw_cmd)
+    distance_cmd = _distance_command(metrics, config)
+    if distance_cmd is not None:
+        commands.append(distance_cmd)
+    return commands
 
 
 def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
-    stages: list[dict[str, Any]] = []
-
     pose = _fetch_pose(config, values)
     metrics = _pose_metrics(pose, config)
     if not metrics.get("ok"):
-        return {"ok": False, "dry_run": dry_run, "error": metrics.get("error"), "stages": stages}
-
-    yaw_cmd = _yaw_command(metrics, config)
-    yaw_execution = None
-    if yaw_cmd is not None:
-        yaw_execution = {"executed": False, "reason": "dry_run=1"} if dry_run else execute_command(config, yaw_cmd)
-    stages.append(_sequence_stage("turn", pose, metrics, yaw_cmd, yaw_execution))
-
-    if yaw_cmd is not None and dry_run:
-        stages.append(
-            _sequence_stage(
-                "forward_back",
-                pose,
-                metrics,
-                {"action": "pending_after_turn_refetch", "reason": "actual /adjust refetches YOLO after turn"},
-                {"executed": False, "reason": "dry_run=1"},
-            )
-        )
         return {
-            "ok": True,
+            "ok": False,
             "dry_run": dry_run,
+            "error": metrics.get("error"),
             "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
-            "stages": stages,
+            "stages": [],
             "final_plan": None,
         }
 
-    if yaw_cmd is not None and not _execution_ok(yaw_execution):
-        return {"ok": False, "dry_run": dry_run, "error": "turn command failed", "stages": stages}
+    commands = _single_calculation_commands(metrics, config)
+    executions: list[dict[str, Any]] = []
+    if dry_run:
+        executions = [{"executed": False, "reason": "dry_run=1"} for _command in commands]
+    else:
+        for command in commands:
+            execution = execute_command(config, command)
+            executions.append(execution)
+            if not _execution_ok(execution):
+                break
 
-    if yaw_cmd is not None and not dry_run:
-        time.sleep(float(config.settle_after_turn_sec))
-        pose = _fetch_pose(config, values)
-        metrics = _pose_metrics(pose, config)
-        if not metrics.get("ok"):
-            return {"ok": False, "dry_run": dry_run, "error": metrics.get("error"), "stages": stages}
+    ok = all(_execution_ok(execution) for execution in executions) if commands and not dry_run else True
+    if commands and dry_run:
+        ok = True
+    if not commands:
+        ok = True
 
-    distance_cmd = _distance_command(metrics, config)
-    distance_execution = None
-    if distance_cmd is not None:
-        distance_execution = (
-            {"executed": False, "reason": "dry_run=1"} if dry_run else execute_command(config, distance_cmd)
-        )
-    stages.append(_sequence_stage("forward_back", pose, metrics, distance_cmd, distance_execution))
-
-    if distance_cmd is not None and not dry_run and not _execution_ok(distance_execution):
-        return {"ok": False, "dry_run": dry_run, "error": "forward/back command failed", "stages": stages}
-
-    final_plan = None
-    if not dry_run:
-        if distance_cmd is not None:
-            time.sleep(float(config.settle_after_drive_sec))
-        final_pose = _fetch_pose(config, values)
-        final_plan = build_plan(final_pose, config)
-
-    return {
-        "ok": True,
+    result: dict[str, Any] = {
+        "ok": ok,
         "dry_run": dry_run,
+        "mode": "single_calculation_single_control_batch",
         "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
-        "stages": stages,
-        "final_plan": final_plan,
+        "stages": [
+            {
+                "stage": "single_calculation_control",
+                "pose_ok": bool(pose.get("ok")),
+                "metrics": metrics,
+                "commands": commands,
+                "executions": executions,
+            }
+        ],
+        "final_plan": None,
+        "note": "Only one YOLO /xyz result is used; /adjust does not refetch after movement.",
     }
+    if not ok:
+        result["error"] = "control command failed"
+    return result
 
 
 def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
@@ -406,7 +378,7 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                             "sdk_build_dir": str(config.sdk_build_dir),
                             "interface": config.interface,
                             "endpoints": ["/health", "/plan", "/step", "/adjust", "/stop"],
-                            "safety": "/plan never moves; /adjust executes turn then forward/back; use /adjust?dry_run=1 to preview",
+                            "safety": "/plan never moves; /adjust uses one YOLO calculation and sends one control batch; use /adjust?dry_run=1 to preview",
                         },
                     )
                     return
@@ -464,8 +436,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-duration-sec", type=float, default=0.5)
     parser.add_argument("--turn-duration-per-deg", type=float, default=0.035)
     parser.add_argument("--drive-duration-per-mm", type=float, default=0.004)
-    parser.add_argument("--settle-after-turn-sec", type=float, default=0.25)
-    parser.add_argument("--settle-after-drive-sec", type=float, default=0.25)
     return parser
 
 
@@ -486,8 +456,6 @@ def main() -> int:
         max_duration_sec=args.max_duration_sec,
         turn_duration_per_deg=args.turn_duration_per_deg,
         drive_duration_per_mm=args.drive_duration_per_mm,
-        settle_after_turn_sec=args.settle_after_turn_sec,
-        settle_after_drive_sec=args.settle_after_drive_sec,
     )
     server = ThreadingHTTPServer((config.bind, config.port), make_handler(config))
     print(f"serving on http://{config.bind}:{config.port}", flush=True)

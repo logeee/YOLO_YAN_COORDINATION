@@ -1202,10 +1202,11 @@ curl -s "http://127.0.0.1:18084/step?confirm=1"
 推荐使用 `/adjust`，它会在一次 API 调用里完成两个阶段：
 
 ```text
-1. 先根据 box_parallel_yaw_deg 执行 turn_left / turn_right。
-2. 转向后等待短暂稳定时间，然后重新读取 YOLO /xyz。
-3. 再根据 near_edge_robot_alignment.target.ground_forward_mm 执行 forward / back。
-4. 近端边前向距离默认目标是 200mm。
+1. 只读取一次 YOLO /xyz。
+2. 根据这一次 box_parallel_yaw_deg 计算 turn_left / turn_right。
+3. 根据这一次 near_edge_robot_alignment.target.ground_forward_mm 计算 forward / back。
+4. 按这一次计算结果依次发控制命令，不在中途重新拍照判断。
+5. 近端边前向距离默认目标是 200mm。
 ```
 
 `/step?confirm=1` 只执行一个动作，主要用于人工调试：

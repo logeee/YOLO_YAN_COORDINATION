@@ -54,15 +54,14 @@ curl -s http://192.168.60.121:18084/adjust
 `/adjust` 的内部流程：
 
 ```text
-1. 读取 YOLO /xyz。
-2. 根据 robot_alignment.control_hint.box_parallel_yaw_deg 先 turn_left / turn_right。
-3. 转向后等待短暂稳定时间。
-4. 重新读取 YOLO /xyz。
-5. 根据 near_edge_robot_alignment.target.ground_forward_mm 做 forward / back。
-6. 再读取一次 YOLO /xyz，返回 final_plan。
+1. 读取一次 YOLO /xyz。
+2. 根据这一次 robot_alignment.control_hint.box_parallel_yaw_deg 计算 turn_left / turn_right。
+3. 根据这一次 near_edge_robot_alignment.target.ground_forward_mm 计算 forward / back。
+4. 按这一次计算结果依次发控制命令。
+5. 中途不会重新拍照，也不会做闭环修正。
 ```
 
-如果第一段 SDK 命令失败，服务会直接返回错误，不继续执行下一段。
+如果某个 SDK 命令失败，服务会直接返回错误，不继续执行后续命令。
 
 ## 调试接口
 
@@ -119,21 +118,20 @@ curl -s "http://127.0.0.1:18084/adjust?yaw_tolerance_deg=1.5&distance_tolerance_
 
 ## 返回值怎么看
 
-`stages` 里有两个阶段：
+`stages` 里只有一次计算和一批控制：
 
 ```text
-turn          转向阶段
-forward_back  前后移动阶段
+single_calculation_control
 ```
 
-每个阶段里重点看：
+重点看：
 
 ```text
 metrics.box_parallel_yaw_deg       烟盒长轴相对机器人需要修正的角度
 metrics.near_edge_forward_mm       靠近机器人那条边的当前前向距离
 metrics.distance_error_mm          当前前向距离 - 目标距离
-command.action                     本阶段要执行的动作
-execution.ok                       SDK 命令是否成功
+commands                            这一次计算得到的控制命令列表
+executions.ok                       每个 SDK 命令是否成功
 ```
 
-`final_plan` 是动作执行完后重新拍照算出的结果。若 `final_plan.command.action` 是 `none`，说明角度和距离都已经在容差内。
+`final_plan` 固定为 `null`，因为 `/adjust` 不再执行后置重拍和闭环判断。
