@@ -118,11 +118,13 @@ curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 默认最长单条命令 5s，可用 max_duration_sec 临时修改
 ```
 
-因为 `/adjust` 是先转向再前进，但只拍一次照，所以前进距离会额外考虑“转向后近端边前向距离变化”的补偿：
+因为 `/adjust` 是先转向再前进，但只拍一次照，所以前进距离要按“转向后的坐标系”计算。公式是确定性的，不使用经验系数：
 
 ```text
-control_distance_error_mm = distance_error_mm + turn_forward_compensation_mm
-turn_forward_compensation_gain 默认 0.6
+predicted_after_turn_forward_mm = near_edge_forward_mm * cos(planned_turn_yaw_rad)
+                                  - near_edge_right_mm * sin(planned_turn_yaw_rad)
+
+control_distance_error_mm = predicted_after_turn_forward_mm - target_near_edge_forward_mm
 ```
 
 返回 JSON 里：
@@ -130,13 +132,9 @@ turn_forward_compensation_gain 默认 0.6
 ```text
 distance_error_mm              原始近端边距离误差
 control_distance_error_mm      实际用于 forward/back 的距离误差
-turn_forward_compensation_mm   转向导致的前向距离补偿量
-```
-
-如果现场发现补偿过大或过小，可以临时调系数：
-
-```bash
-curl -s "http://127.0.0.1:18084/adjust?turn_forward_compensation_gain=0.5"
+planned_turn_yaw_deg           本次计划转向角
+predicted_after_turn_forward_mm 计划转向后的近端边前向距离
+forward_delta_from_planned_turn_mm 转向导致的前向距离变化量
 ```
 
 修改容差：

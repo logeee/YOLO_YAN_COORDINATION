@@ -490,4 +490,4 @@ forward / back          用于让近端边前向距离接近 200mm
 stop                    停止
 ```
 
-控制时长按物理量计算：转向用 `角度(rad) / turn_speed`，前后移动用 `距离(m) / drive_speed`，默认单条命令最长 `5s`。因为 `/adjust` 是先转向再前进，但只拍一次照，所以前后距离会加一个转向补偿量，返回里的 `control_distance_error_mm` 才是实际用于 `forward/back` 的距离误差。
+控制时长按物理量计算：转向用 `角度(rad) / turn_speed`，前后移动用 `距离(m) / drive_speed`，默认单条命令最长 `5s`。因为 `/adjust` 是先转向再前进，但只拍一次照，所以会先用确定性旋转公式预测转向后的近端边前向距离，返回里的 `control_distance_error_mm` 才是实际用于 `forward/back` 的距离误差。

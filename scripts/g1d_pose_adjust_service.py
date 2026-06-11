@@ -38,7 +38,6 @@ class AdjustConfig:
     drive_speed: float = 0.1
     min_duration_sec: float = 0.15
     max_duration_sec: float = 5.0
-    turn_forward_compensation_gain: float = 0.6
     request_timeout_sec: float = 8.0
 
 
@@ -52,7 +51,6 @@ OVERRIDE_TYPES: dict[str, type] = {
     "drive_speed": float,
     "min_duration_sec": float,
     "max_duration_sec": float,
-    "turn_forward_compensation_gain": float,
 }
 
 
@@ -115,7 +113,6 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
         "drive_speed",
         "min_duration_sec",
         "max_duration_sec",
-        "turn_forward_compensation_gain",
     }
     updates = {key: values[key] for key in allowed if key in values}
     return replace(config, **updates)
@@ -200,33 +197,41 @@ def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
     }
 
 
-def _metrics_with_turn_forward_compensation(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
+def _planned_turn_yaw_rad(command: dict[str, Any] | None) -> float:
+    if not command or command.get("phase") != "align_box_long_axis":
+        return 0.0
+    action = str(command.get("action") or "")
+    sign = 1.0 if action == "turn_left" else -1.0 if action == "turn_right" else 0.0
+    return sign * abs(float(command.get("speed") or 0.0)) * abs(float(command.get("duration_sec") or 0.0))
+
+
+def _metrics_after_planned_turn(
+    metrics: dict[str, Any],
+    config: AdjustConfig,
+    yaw_command: dict[str, Any] | None,
+) -> dict[str, Any]:
     updated = dict(metrics)
     raw_error_mm = float(metrics["distance_error_mm"])
     updated["control_distance_error_mm"] = round(raw_error_mm, 1)
-    updated["turn_forward_compensation_mm"] = 0.0
     updated["predicted_after_turn_forward_mm"] = metrics.get("near_edge_forward_mm")
-    updated["turn_forward_compensation_gain"] = round(float(config.turn_forward_compensation_gain), 3)
+    updated["forward_delta_from_planned_turn_mm"] = 0.0
+    planned_yaw_rad = _planned_turn_yaw_rad(yaw_command)
+    updated["planned_turn_yaw_deg"] = round(math.degrees(planned_yaw_rad), 3)
+    updated["planned_turn_yaw_rad"] = round(planned_yaw_rad, 6)
 
-    yaw_deg = float(metrics["box_parallel_yaw_deg"])
-    if abs(yaw_deg) <= float(config.yaw_tolerance_deg):
+    if planned_yaw_rad == 0.0:
         return updated
 
     right_mm = metrics.get("near_edge_right_mm")
     if right_mm is None:
         return updated
 
-    gain = float(config.turn_forward_compensation_gain)
-    if gain == 0.0:
-        return updated
-
     forward_mm = float(metrics["near_edge_forward_mm"])
-    yaw_rad = math.radians(yaw_deg)
-    predicted_forward_mm = forward_mm * math.cos(yaw_rad) - float(right_mm) * math.sin(yaw_rad)
-    compensation_mm = (predicted_forward_mm - forward_mm) * gain
-    control_error_mm = raw_error_mm + compensation_mm
+    predicted_forward_mm = forward_mm * math.cos(planned_yaw_rad) - float(right_mm) * math.sin(planned_yaw_rad)
+    forward_delta_mm = predicted_forward_mm - forward_mm
+    control_error_mm = predicted_forward_mm - float(config.target_near_edge_forward_mm)
     updated["control_distance_error_mm"] = round(control_error_mm, 1)
-    updated["turn_forward_compensation_mm"] = round(compensation_mm, 1)
+    updated["forward_delta_from_planned_turn_mm"] = round(forward_delta_mm, 1)
     updated["predicted_after_turn_forward_mm"] = round(predicted_forward_mm, 1)
     return updated
 
@@ -259,7 +264,8 @@ def _distance_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str
         "reason": "make near-edge forward distance close to target",
         "error_mm": round(distance_error_mm, 1),
         "raw_error_mm": metrics.get("distance_error_mm"),
-        "turn_forward_compensation_mm": metrics.get("turn_forward_compensation_mm", 0.0),
+        "planned_turn_yaw_deg": metrics.get("planned_turn_yaw_deg", 0.0),
+        "forward_delta_from_planned_turn_mm": metrics.get("forward_delta_from_planned_turn_mm", 0.0),
         "predicted_after_turn_forward_mm": metrics.get("predicted_after_turn_forward_mm"),
     }
 
@@ -332,7 +338,7 @@ def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) 
     yaw_cmd = _yaw_command(metrics, config)
     if yaw_cmd is not None:
         commands.append(yaw_cmd)
-    control_metrics = _metrics_with_turn_forward_compensation(metrics, config)
+    control_metrics = _metrics_after_planned_turn(metrics, config, yaw_cmd)
     distance_cmd = _distance_command(control_metrics, config)
     if distance_cmd is not None:
         commands.append(distance_cmd)
@@ -478,7 +484,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--drive-speed", type=float, default=0.1)
     parser.add_argument("--min-duration-sec", type=float, default=0.15)
     parser.add_argument("--max-duration-sec", type=float, default=5.0)
-    parser.add_argument("--turn-forward-compensation-gain", type=float, default=0.6)
     return parser
 
 
@@ -497,7 +502,6 @@ def main() -> int:
         drive_speed=args.drive_speed,
         min_duration_sec=args.min_duration_sec,
         max_duration_sec=args.max_duration_sec,
-        turn_forward_compensation_gain=args.turn_forward_compensation_gain,
     )
     server = ThreadingHTTPServer((config.bind, config.port), make_handler(config))
     print(f"serving on http://{config.bind}:{config.port}", flush=True)
