@@ -16,6 +16,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -75,6 +76,24 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[s
     handler.wfile.write(data)
 
 
+def _start_ndjson_response(handler: BaseHTTPRequestHandler, status: int = 200) -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Accel-Buffering", "no")
+    handler.end_headers()
+
+
+def _write_ndjson(handler: BaseHTTPRequestHandler, payload: dict[str, Any]) -> None:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+    handler.wfile.write(data)
+    handler.wfile.flush()
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat(timespec="milliseconds")
+
+
 def _parse_bool(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "y", "on")
 
@@ -86,7 +105,7 @@ def _request_values(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         normalized = key.replace("-", "_")
         if normalized in OVERRIDE_TYPES and raw_values:
             values[normalized] = OVERRIDE_TYPES[normalized](raw_values[-1])
-        elif normalized in ("confirm", "execute", "dry_run") and raw_values:
+        elif normalized in ("confirm", "execute", "dry_run", "stream") and raw_values:
             values[normalized] = _parse_bool(raw_values[-1])
 
     length = int(handler.headers.get("Content-Length") or 0)
@@ -99,7 +118,7 @@ def _request_values(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             normalized = key.replace("-", "_")
             if normalized in OVERRIDE_TYPES:
                 values[normalized] = OVERRIDE_TYPES[normalized](value)
-            elif normalized in ("confirm", "execute", "dry_run"):
+            elif normalized in ("confirm", "execute", "dry_run", "stream"):
                 values[normalized] = _parse_bool(value)
     return values
 
@@ -346,12 +365,17 @@ def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) 
 
 
 def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    started_at = _now_iso()
+    started = time.perf_counter()
     pose = _fetch_pose(config, values)
     metrics = _pose_metrics(pose, config)
     if not metrics.get("ok"):
         return {
             "ok": False,
             "dry_run": dry_run,
+            "started_at": started_at,
+            "finished_at": _now_iso(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
             "error": metrics.get("error"),
             "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
             "stages": [],
@@ -379,6 +403,9 @@ def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: b
         "ok": ok,
         "dry_run": dry_run,
         "mode": "single_calculation_single_control_batch",
+        "started_at": started_at,
+        "finished_at": _now_iso(),
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
         "target_near_edge_forward_mm": round(float(config.target_near_edge_forward_mm), 1),
         "stages": [
             {
@@ -395,6 +422,128 @@ def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: b
     if not ok:
         result["error"] = "control command failed"
     return result
+
+
+def stream_adjust_sequence(
+    handler: BaseHTTPRequestHandler,
+    config: AdjustConfig,
+    values: dict[str, Any],
+    dry_run: bool = False,
+) -> None:
+    started_at = _now_iso()
+    started = time.perf_counter()
+    target_mm = round(float(config.target_near_edge_forward_mm), 1)
+
+    def emit(event: str, payload: dict[str, Any] | None = None) -> None:
+        message = {"event": event, "ts": _now_iso()}
+        if payload:
+            message.update(payload)
+        _write_ndjson(handler, message)
+
+    emit(
+        "adjust_started",
+        {
+            "ok": True,
+            "dry_run": dry_run,
+            "mode": "single_calculation_single_control_batch",
+            "target_near_edge_forward_mm": target_mm,
+        },
+    )
+
+    try:
+        pose = _fetch_pose(config, values)
+        metrics = _pose_metrics(pose, config)
+        if not metrics.get("ok"):
+            result = {
+                "ok": False,
+                "dry_run": dry_run,
+                "started_at": started_at,
+                "finished_at": _now_iso(),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+                "error": metrics.get("error"),
+                "target_near_edge_forward_mm": target_mm,
+                "stages": [],
+                "final_plan": None,
+            }
+            emit("adjust_finished", {"ok": False, "error": result["error"], "result": result})
+            return
+
+        commands, control_metrics = _single_calculation_commands(metrics, config)
+        emit(
+            "plan_ready",
+            {
+                "ok": True,
+                "metrics": control_metrics,
+                "commands": commands,
+                "command_count": len(commands),
+            },
+        )
+
+        executions: list[dict[str, Any]] = []
+        if dry_run:
+            executions = [{"executed": False, "reason": "dry_run=1"} for _command in commands]
+            for index, command in enumerate(commands):
+                emit(
+                    "command_skipped",
+                    {"ok": True, "index": index, "command": command, "execution": executions[index]},
+                )
+        else:
+            for index, command in enumerate(commands):
+                emit("command_started", {"ok": True, "index": index, "command": command})
+                execution = execute_command(config, command)
+                executions.append(execution)
+                emit(
+                    "command_finished",
+                    {
+                        "ok": _execution_ok(execution),
+                        "index": index,
+                        "command": command,
+                        "execution": execution,
+                    },
+                )
+                if not _execution_ok(execution):
+                    break
+
+        ok = all(_execution_ok(execution) for execution in executions) if commands and not dry_run else True
+        if commands and dry_run:
+            ok = True
+        if not commands:
+            ok = True
+
+        result: dict[str, Any] = {
+            "ok": ok,
+            "dry_run": dry_run,
+            "mode": "single_calculation_single_control_batch",
+            "started_at": started_at,
+            "finished_at": _now_iso(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "target_near_edge_forward_mm": target_mm,
+            "stages": [
+                {
+                    "stage": "single_calculation_control",
+                    "pose_ok": bool(pose.get("ok")),
+                    "metrics": control_metrics,
+                    "commands": commands,
+                    "executions": executions,
+                }
+            ],
+            "final_plan": None,
+            "note": "Only one YOLO /xyz result is used; /adjust does not refetch after movement.",
+        }
+        if not ok:
+            result["error"] = "control command failed"
+        emit("adjust_finished", {"ok": ok, "error": result.get("error"), "result": result})
+    except Exception as exc:
+        emit(
+            "adjust_finished",
+            {
+                "ok": False,
+                "error": str(exc),
+                "started_at": started_at,
+                "finished_at": _now_iso(),
+                "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            },
+        )
 
 
 def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
@@ -428,6 +577,7 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                             "sdk_build_dir": str(config.sdk_build_dir),
                             "interface": config.interface,
                             "endpoints": ["/health", "/plan", "/step", "/adjust", "/stop"],
+                            "streaming": "/adjust?stream=1 returns NDJSON progress events",
                             "safety": "/plan never moves; /adjust uses one YOLO calculation and sends one control batch; use /adjust?dry_run=1 to preview",
                         },
                     )
@@ -452,6 +602,10 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/adjust":
                     dry_run = bool(values.get("dry_run"))
+                    if bool(values.get("stream")):
+                        _start_ndjson_response(self)
+                        stream_adjust_sequence(self, config, values, dry_run=dry_run)
+                        return
                     result = run_adjust_sequence(config, values, dry_run=dry_run)
                     _json_response(self, 200 if result.get("ok") else 500, result)
                     return

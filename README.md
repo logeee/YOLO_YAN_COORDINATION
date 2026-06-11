@@ -411,6 +411,13 @@ curl -s http://127.0.0.1:18084/adjust
 curl -s http://192.168.60.121:18084/adjust
 ```
 
+实时调试输出，一行一个 JSON 事件：
+
+```bash
+curl -N -s "http://127.0.0.1:18084/adjust?stream=1"
+curl -N -s "http://192.168.60.121:18084/adjust?stream=1"
+```
+
 紧急停止：
 
 ```bash

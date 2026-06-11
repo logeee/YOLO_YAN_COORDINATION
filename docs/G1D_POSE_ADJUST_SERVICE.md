@@ -35,6 +35,23 @@ curl -s http://127.0.0.1:18084/adjust
 curl -s http://192.168.60.121:18084/adjust
 ```
 
+实时调试输出：
+
+```bash
+curl -N -s "http://127.0.0.1:18084/adjust?stream=1"
+curl -N -s "http://192.168.60.121:18084/adjust?stream=1"
+```
+
+`stream=1` 会返回 NDJSON，一行一个事件：
+
+```text
+adjust_started
+plan_ready
+command_started
+command_finished
+adjust_finished
+```
+
 急停：
 
 ```bash
