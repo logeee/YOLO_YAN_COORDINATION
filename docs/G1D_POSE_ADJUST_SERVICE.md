@@ -110,6 +110,14 @@ curl -s "http://127.0.0.1:18084/adjust?label=Xizi_Liqun"
 curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 ```
 
+控制时长按物理量计算：
+
+```text
+转向时长 = abs(box_parallel_yaw_deg) 转成 rad 后 / turn_speed
+前后时长 = abs(distance_error_mm) / 1000 / drive_speed
+默认最长单条命令 5s，可用 max_duration_sec 临时修改
+```
+
 修改容差：
 
 ```bash

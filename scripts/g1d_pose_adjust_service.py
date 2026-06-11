@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import time
 import urllib.parse
@@ -36,9 +37,7 @@ class AdjustConfig:
     turn_speed: float = 0.1
     drive_speed: float = 0.1
     min_duration_sec: float = 0.15
-    max_duration_sec: float = 0.5
-    turn_duration_per_deg: float = 0.035
-    drive_duration_per_mm: float = 0.004
+    max_duration_sec: float = 5.0
     request_timeout_sec: float = 8.0
 
 
@@ -52,8 +51,6 @@ OVERRIDE_TYPES: dict[str, type] = {
     "drive_speed": float,
     "min_duration_sec": float,
     "max_duration_sec": float,
-    "turn_duration_per_deg": float,
-    "drive_duration_per_mm": float,
 }
 
 
@@ -116,8 +113,6 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
         "drive_speed",
         "min_duration_sec",
         "max_duration_sec",
-        "turn_duration_per_deg",
-        "drive_duration_per_mm",
     }
     updates = {key: values[key] for key in allowed if key in values}
     return replace(config, **updates)
@@ -148,8 +143,15 @@ def _nested(data: Any, *keys: str) -> Any:
     return current
 
 
-def _duration_for_error(error: float, per_unit: float, config: AdjustConfig) -> float:
-    duration = abs(float(error)) * float(per_unit)
+def _duration_for_turn_deg(yaw_deg: float, config: AdjustConfig) -> float:
+    speed = max(abs(float(config.turn_speed)), 1e-6)
+    duration = math.radians(abs(float(yaw_deg))) / speed
+    return round(_clamp(duration, config.min_duration_sec, config.max_duration_sec), 3)
+
+
+def _duration_for_distance_mm(distance_error_mm: float, config: AdjustConfig) -> float:
+    speed = max(abs(float(config.drive_speed)), 1e-6)
+    duration = abs(float(distance_error_mm)) / 1000.0 / speed
     return round(_clamp(duration, config.min_duration_sec, config.max_duration_sec), 3)
 
 
@@ -200,7 +202,7 @@ def _yaw_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str, Any
         "phase": "align_box_long_axis",
         "action": action,
         "speed": round(float(config.turn_speed), 3),
-        "duration_sec": _duration_for_error(yaw_deg, config.turn_duration_per_deg, config),
+        "duration_sec": _duration_for_turn_deg(yaw_deg, config),
         "reason": "make box_parallel_yaw_deg close to 0",
         "error_deg": round(yaw_deg, 3),
     }
@@ -215,7 +217,7 @@ def _distance_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str
         "phase": "adjust_near_edge_forward_distance",
         "action": action,
         "speed": round(float(config.drive_speed), 3),
-        "duration_sec": _duration_for_error(distance_error_mm, config.drive_duration_per_mm, config),
+        "duration_sec": _duration_for_distance_mm(distance_error_mm, config),
         "reason": "make near-edge forward distance close to target",
         "error_mm": round(distance_error_mm, 1),
     }
@@ -433,9 +435,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--turn-speed", type=float, default=0.1)
     parser.add_argument("--drive-speed", type=float, default=0.1)
     parser.add_argument("--min-duration-sec", type=float, default=0.15)
-    parser.add_argument("--max-duration-sec", type=float, default=0.5)
-    parser.add_argument("--turn-duration-per-deg", type=float, default=0.035)
-    parser.add_argument("--drive-duration-per-mm", type=float, default=0.004)
+    parser.add_argument("--max-duration-sec", type=float, default=5.0)
     return parser
 
 
@@ -454,8 +454,6 @@ def main() -> int:
         drive_speed=args.drive_speed,
         min_duration_sec=args.min_duration_sec,
         max_duration_sec=args.max_duration_sec,
-        turn_duration_per_deg=args.turn_duration_per_deg,
-        drive_duration_per_mm=args.drive_duration_per_mm,
     )
     server = ThreadingHTTPServer((config.bind, config.port), make_handler(config))
     print(f"serving on http://{config.bind}:{config.port}", flush=True)

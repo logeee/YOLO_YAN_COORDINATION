@@ -489,3 +489,5 @@ turn_left / turn_right  用于让烟盒长轴角接近 0
 forward / back          用于让近端边前向距离接近 200mm
 stop                    停止
 ```
+
+控制时长按物理量计算：转向用 `角度(rad) / turn_speed`，前后移动用 `距离(m) / drive_speed`，默认单条命令最长 `5s`。
