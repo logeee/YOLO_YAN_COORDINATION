@@ -706,7 +706,7 @@ def _serve_projected_image(
 
 def _candidate_table(candidates: Any) -> str:
     if not isinstance(candidates, list) or not candidates:
-        return "<p>No YOLO candidates.</p>"
+        return "<p>暂无 YOLO 候选。</p>"
     rows = []
     for item in candidates:
         if not isinstance(item, dict):
@@ -725,10 +725,140 @@ def _candidate_table(candidates: Any) -> str:
         )
     return (
         "<table>"
-        "<thead><tr><th>candidate</th><th>raw</th><th>class</th><th>conf</th><th>score</th>"
-        "<th>area</th><th>box_xyxy</th><th>points_px</th></tr></thead>"
+        "<thead><tr><th>候选序号</th><th>YOLO 原序号</th><th>类别</th><th>置信度</th><th>评分</th>"
+        "<th>mask面积</th><th>检测框</th><th>四点像素</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
+
+
+def _nested(data: Any, *keys: str) -> Any:
+    current = data
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _fmt_number(value: Any, suffix: str = "", ndigits: int = 1) -> str:
+    try:
+        number = float(value)
+    except Exception:
+        return "-"
+    return f"{number:.{int(ndigits)}f}{suffix}"
+
+
+def _fmt_list(values: Any, suffix: str = " mm") -> str:
+    if not isinstance(values, (list, tuple)):
+        return "-"
+    return "[" + ", ".join(_fmt_number(value, "", 1) for value in values) + f"]{suffix}"
+
+
+def _orientation_cn(value: Any) -> str:
+    if value == "long_x_short_y":
+        return "长边=0-1/3-2"
+    if value == "short_x_long_y":
+        return "长边=1-2/0-3"
+    return str(value or "-")
+
+
+def _error_cn(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if "YOLO found no detections" in text:
+        return "未检测到烟盒目标"
+    if "no head camera frame" in text:
+        return "没有拿到头部相机画面"
+    if "reprojection" in text:
+        return "四点质量不足，重投影误差过大"
+    return text
+
+
+def _summary_tile(label: str, value: str, note: str = "") -> str:
+    return (
+        '<div class="summary-tile">'
+        f'<div class="summary-label">{html_lib.escape(label)}</div>'
+        f'<div class="summary-value">{html_lib.escape(value)}</div>'
+        f'<div class="summary-note">{html_lib.escape(note)}</div>'
+        "</div>"
+    )
+
+
+def _key_summary_html(payload: dict[str, Any]) -> str:
+    alignment = payload.get("robot_alignment")
+    if not isinstance(alignment, dict):
+        alignment = {}
+    target = alignment.get("target")
+    if not isinstance(target, dict):
+        target = {}
+    control = alignment.get("control_hint")
+    if not isinstance(control, dict):
+        control = {}
+
+    label = payload.get("selected_yolo_label") or "-"
+    confidence = payload.get("selected_yolo_confidence")
+    selected = _orientation_cn(payload.get("selected_orientation"))
+
+    tiles = [
+        _summary_tile("识别结果", f"{label} / conf {_fmt_number(confidence, '', 3)}", "当前用于计算的 YOLO 目标"),
+        _summary_tile("横竖假设", selected, "系统自动选中的物理长边方向"),
+        _summary_tile("中心点坐标", _fmt_list(payload.get("center_xyz_mm")), "left_camera_optical: X右 Y下 Z前"),
+        _summary_tile("中心上方点", _fmt_list(payload.get("center_above_xyz_mm")), "默认中心点上方 100mm"),
+        _summary_tile("直线距离", _fmt_number(target.get("range_from_left_camera_mm"), " mm", 1), "左目光心到中心点"),
+        _summary_tile("地面前向", _fmt_number(target.get("ground_forward_mm"), " mm", 1), "后续前进距离参考"),
+        _summary_tile("左右偏差", _fmt_number(target.get("right_mm"), " mm", 1), "正数在机器人右侧"),
+        _summary_tile("朝目标转角", _fmt_number(control.get("turn_first_yaw_deg"), " deg", 2), "负数通常向右转"),
+        _summary_tile("烟盒长轴角", _fmt_number(control.get("box_parallel_yaw_deg"), " deg", 2), "末端/身体对齐烟盒参考"),
+        _summary_tile("服务耗时", _fmt_number(_nested(payload, "server", "elapsed_ms"), " ms", 1), "本次拍照+推理+计算"),
+    ]
+    return '<div class="summary-grid">' + "".join(tiles) + "</div>"
+
+
+def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
+    hypotheses = payload.get("robot_alignment_hypotheses")
+    if not isinstance(hypotheses, dict) or not hypotheses:
+        return "<p>暂无横/竖假设结果。</p>"
+
+    rows = []
+    for name in ORIENTATION_DISPLAY_ORDER:
+        item = hypotheses.get(name)
+        if not isinstance(item, dict):
+            continue
+        alignment = item.get("robot_alignment")
+        if not isinstance(alignment, dict):
+            alignment = {}
+        target = alignment.get("target")
+        if not isinstance(target, dict):
+            target = {}
+        control = alignment.get("control_hint")
+        if not isinstance(control, dict):
+            control = {}
+        selected = "是" if item.get("selected") else ""
+        rows.append(
+            "<tr>"
+            f"<td>{html_lib.escape(selected)}</td>"
+            f"<td>{html_lib.escape(_orientation_cn(name))}</td>"
+            f"<td>{html_lib.escape(_fmt_list(item.get('object_top_size_mm'), ' mm'))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(item.get('range_from_left_camera_mm'), ' mm', 1))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(target.get('ground_forward_mm'), ' mm', 1))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(target.get('right_mm'), ' mm', 1))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(control.get('turn_first_yaw_deg'), ' deg', 2))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(control.get('box_parallel_yaw_deg'), ' deg', 2))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(item.get('left_reprojection_error_px'), ' px', 3))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(item.get('depth_delta_mm'), ' mm', 1))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table>"
+        "<thead><tr><th>选中</th><th>横/竖假设</th><th>上表面尺寸</th><th>直线距离</th>"
+        "<th>地面前向</th><th>左右偏差</th><th>朝目标转角</th><th>烟盒长轴角</th>"
+        "<th>重投影误差</th><th>左右深度差</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+ORIENTATION_DISPLAY_ORDER = ("long_x_short_y", "short_x_long_y")
 
 
 def _debug_dashboard_html(payload: dict[str, Any]) -> str:
@@ -759,27 +889,35 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
 
     image_cards = "\n".join(
         [
-            f'<section><h2>Left Input</h2><img src="{image_src("/latest/left_input.jpg")}" alt="left input"></section>',
-            f'<section><h2>Left Points</h2><img src="{image_src("/latest/left_points.jpg")}" alt="left points"></section>',
-            f'<section><h2>Left Above Points</h2><img src="{image_src("/latest/left_projected.jpg")}" alt="left projected above points"></section>',
-            f'<section class="wide"><h2>Left Above Points Zoom</h2><img src="{image_src("/latest/left_projected_zoom.jpg")}" alt="left projected above points zoom"></section>',
-            f'<section><h2>Left All Candidates</h2><img src="{image_src("/latest/left_candidates.jpg")}" alt="left candidates"></section>',
-            f'<section><h2>Right Input</h2><img src="{image_src("/latest/right_input.jpg")}" alt="right input"></section>',
-            f'<section><h2>Right Points</h2><img src="{image_src("/latest/right_points.jpg")}" alt="right points"></section>',
-            f'<section><h2>Right All Candidates</h2><img src="{image_src("/latest/right_candidates.jpg")}" alt="right candidates"></section>',
+            f'<section><h2>左目原图</h2><img src="{image_src("/latest/left_input.jpg")}" alt="left input"></section>',
+            f'<section><h2>左目四点</h2><img src="{image_src("/latest/left_points.jpg")}" alt="left points"></section>',
+            f'<section><h2>左目上方点</h2><img src="{image_src("/latest/left_projected.jpg")}" alt="left projected above points"></section>',
+            f'<section class="wide"><h2>左目上方点放大</h2><img src="{image_src("/latest/left_projected_zoom.jpg")}" alt="left projected above points zoom"></section>',
+            f'<section><h2>左目全部候选</h2><img src="{image_src("/latest/left_candidates.jpg")}" alt="left candidates"></section>',
+            f'<section><h2>右目原图</h2><img src="{image_src("/latest/right_input.jpg")}" alt="right input"></section>',
+            f'<section><h2>右目四点</h2><img src="{image_src("/latest/right_points.jpg")}" alt="right points"></section>',
+            f'<section><h2>右目全部候选</h2><img src="{image_src("/latest/right_candidates.jpg")}" alt="right candidates"></section>',
         ]
     )
     run_again_href = html_lib.escape(f"/debug?t={cache_token}")
+    status_line = html_lib.escape(
+        f"状态={ok_text} 请求={request_id} 耗时={elapsed_ms}ms 错误={_error_cn(payload.get('error'))}"
+    )
     return f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Cigarette Pose YOLO Debug</title>
+  <title>烟盒 YOLO 调试</title>
   <style>
     body {{ font-family: Arial, sans-serif; margin: 18px; color: #1f2933; }}
     header {{ display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }}
     a.button {{ display: inline-block; padding: 7px 10px; border: 1px solid #8795a1; color: #102a43; text-decoration: none; }}
     .status {{ margin: 12px 0; }}
+    .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 18px; }}
+    .summary-tile {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; min-height: 76px; }}
+    .summary-label {{ color: #52606d; font-size: 13px; margin-bottom: 6px; }}
+    .summary-value {{ color: #102a43; font-size: 20px; font-weight: 700; line-height: 1.2; word-break: break-word; }}
+    .summary-note {{ color: #627d98; font-size: 12px; margin-top: 6px; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }}
     section {{ border: 1px solid #d9e2ec; padding: 10px; }}
     img {{ width: 100%; max-width: 640px; height: auto; display: block; background: #f0f4f8; }}
@@ -793,20 +931,24 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
 </head>
 <body>
   <header>
-    <h1>Cigarette Pose YOLO Debug</h1>
-    <a class="button" href="{run_again_href}">Run Again</a>
-    <a class="button" href="/pose">JSON</a>
-    <a class="button" href="/xyz">XYZ</a>
+    <h1>烟盒 YOLO 调试</h1>
+    <a class="button" href="{run_again_href}">重新拍照</a>
+    <a class="button" href="/pose">完整 JSON</a>
+    <a class="button" href="/xyz">坐标 JSON</a>
   </header>
-  <div class="status">ok={ok_text} request_id={request_id} elapsed_ms={elapsed_ms} error={error_text}</div>
+  <div class="status">{status_line}</div>
+  <h2>关键数据</h2>
+  {_key_summary_html(payload)}
+  <h2>横竖两套假设对比</h2>
+  {_alignment_hypotheses_table(payload)}
   <div class="grid">{image_cards}</div>
-  <h2>Selected Left Candidate</h2>
+  <h2>当前选中的左目候选</h2>
   <pre>{selected_text}</pre>
-  <h2>Left YOLO Candidates</h2>
+  <h2>左目 YOLO 候选</h2>
   {_candidate_table(left_candidates)}
-  <h2>Right YOLO Candidates</h2>
+  <h2>右目 YOLO 候选</h2>
   {_candidate_table(right_candidates)}
-  <h2>Full JSON</h2>
+  <h2>完整 JSON</h2>
   <pre>{json_text}</pre>
 </body>
 </html>
