@@ -872,6 +872,62 @@ def _evaluate_point_candidate(
     }
 
 
+def _orientation_meaning(orientation: str) -> str:
+    if orientation == "long_x_short_y":
+        return "physical long side is assigned to ordered image edges 0-1 and 3-2"
+    if orientation == "short_x_long_y":
+        return "physical long side is assigned to ordered image edges 1-2 and 0-3"
+    return "unknown orientation hypothesis"
+
+
+def _build_robot_alignment_hypotheses(
+    left_by_orientation: dict[str, dict[str, Any]],
+    right_by_orientation: dict[str, dict[str, Any]] | None,
+    selected_orientation: str,
+    camera_to_vertical_deg: float,
+    known_range_mm: float | None = None,
+    lens_glass_to_optical_center_mm: float = 0.0,
+) -> dict[str, dict[str, Any]]:
+    hypotheses: dict[str, dict[str, Any]] = {}
+    for orientation in ORIENTATIONS:
+        pose = left_by_orientation[orientation]
+        if known_range_mm is not None:
+            pose = scale_pose_to_known_range(
+                pose,
+                known_range_mm=known_range_mm,
+                lens_glass_to_optical_center_mm=lens_glass_to_optical_center_mm,
+            )
+        right_pose = right_by_orientation[orientation] if right_by_orientation else None
+        try:
+            alignment = compute_robot_alignment(
+                pose,
+                camera_to_vertical_deg=camera_to_vertical_deg,
+                target_key="center_xyz_mm",
+            )
+        except Exception as exc:
+            alignment = {
+                "ok": False,
+                "error": str(exc),
+            }
+        hypotheses[orientation] = {
+            "selected": orientation == selected_orientation,
+            "meaning": _orientation_meaning(orientation),
+            "object_top_size_mm": pose.get("object_top_size_mm"),
+            "center_xyz_mm": pose.get("center_xyz_mm"),
+            "range_from_left_camera_mm": pose.get("range_from_left_camera_mm"),
+            "left_reprojection_error_px": pose.get("reprojection_error_px"),
+            "right_reprojection_error_px": right_pose.get("reprojection_error_px") if right_pose else None,
+            "depth_delta_mm": (
+                round(abs(float(pose["depth_mm"]) - float(right_pose["depth_mm"])), 1)
+                if right_pose is not None
+                else None
+            ),
+            "box_head_point": pose.get("box_head_point"),
+            "robot_alignment": alignment,
+        }
+    return hypotheses
+
+
 def _load_image(path: Path | None, label: str) -> np.ndarray | None:
     if path is None:
         return None
@@ -1468,6 +1524,15 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     "right/left points may not correspond, or lens-surface baseline may differ from optical-center baseline"
                 )
 
+    robot_alignment_hypotheses = _build_robot_alignment_hypotheses(
+        left_by_orientation,
+        right_by_orientation,
+        selected_orientation,
+        camera_to_vertical_deg=args.camera_to_vertical_deg,
+        known_range_mm=args.known_range_mm,
+        lens_glass_to_optical_center_mm=args.lens_glass_to_optical_center_mm,
+    )
+
     algorithm_by_mode = {
         "yolo": "yolo_seg_pnp_left_primary",
         "points": "points_pnp_left_primary",
@@ -1576,6 +1641,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             "ok": False,
             "error": str(exc),
         }
+    result["robot_alignment_hypotheses"] = robot_alignment_hypotheses
     if warnings:
         result["warnings"] = warnings
     if not left_ok:

@@ -291,6 +291,7 @@ curl -s http://127.0.0.1:18081/xyz \
 常用字段：
 
 ```text
+selected_orientation                              当前自动选中的横/竖物理尺寸假设
 robot_alignment.target.range_from_left_camera_mm   左目光心到上表面中心点的直线距离
 robot_alignment.target.ground_forward_mm           按相机安装角 42.4° 投影后的地面前向距离
 robot_alignment.target.right_mm                    目标相对左目/机器人向右的偏差
@@ -309,6 +310,20 @@ G1D ROS1 SDK 里默认订阅 `/cmd_vel`。当前 SDK 代码实际把 `Twist.line
 再用 forward_distance_m 做前后距离闭环
 height_down_m 用于手臂或机身高度微调
 box_parallel_yaw_deg 用于让机器人或末端执行器和烟盒长轴对齐
+```
+
+当前会同时计算两种物理尺寸假设：
+
+```text
+long_x_short_y   四点排序里的 0-1 / 3-2 方向是烟盒物理长边
+short_x_long_y   四点排序里的 1-2 / 0-3 方向是烟盒物理长边
+```
+
+`selected_orientation` 是系统根据重投影误差和左右目深度一致性自动选出的假设。两套假设的微调结果都会放在 `robot_alignment_hypotheses`，可以这样查看：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); hs=d['robot_alignment_hypotheses']; [print(k, 'selected=', v['selected'], 'range=', v['range_from_left_camera_mm'], 'turn=', v['robot_alignment']['control_hint']['turn_first_yaw_deg'], 'box_yaw=', v['robot_alignment']['control_hint']['box_parallel_yaw_deg']) for k,v in hs.items()]"
 ```
 
 ## Debug 页面

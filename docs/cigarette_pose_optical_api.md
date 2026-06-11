@@ -1068,6 +1068,9 @@ curl -s http://127.0.0.1:18081/xyz \
 字段解释：
 
 ```text
+selected_orientation
+  当前自动选中的物理尺寸假设。它不是简单的画面横/竖标签，而是长边对应四点哪一组边。
+
 robot_alignment.target.range_from_left_camera_mm
   左目光心到烟盒上表面中心点的直线距离。
 
@@ -1111,3 +1114,24 @@ python3 scripts/cigarette_pose_alignment.py \
 ```
 
 注意：这一步只输出控制前的几何参考量，不会发布 `/cmd_vel`，也不会让机器人移动。G1D SDK 当前默认订阅 `/cmd_vel`，并把 `Twist.linear.x` 映射为前后速度、`Twist.angular.z` 映射为转向速度；真正运动时还需要单独做限速、停止条件和 odom 闭环。
+
+### 横放/竖放两套假设
+
+接口内部会同时计算两种 PnP 假设：
+
+```text
+long_x_short_y
+  四点排序后的 0-1 / 3-2 方向对应烟盒物理长边。
+
+short_x_long_y
+  四点排序后的 1-2 / 0-3 方向对应烟盒物理长边。
+```
+
+如果 `orientation=auto_by_stereo`，接口会根据左目重投影误差，以及有右目时的左右深度一致性，自动选择其中一套作为 `selected_orientation`。最终的 `center_xyz_mm`、`box_head_point_*`、`robot_alignment` 都来自这套选中的假设。
+
+为了调试横放/竖放，`/pose` 和 `/xyz` 还会返回 `robot_alignment_hypotheses`，里面保留两套假设各自的坐标、距离、烟盒长轴角度和控制参考量：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); hs=d['robot_alignment_hypotheses']; [print(k, 'selected=', v['selected'], 'range=', v['range_from_left_camera_mm'], 'turn=', v['robot_alignment']['control_hint']['turn_first_yaw_deg'], 'box_yaw=', v['robot_alignment']['control_hint']['box_parallel_yaw_deg']) for k,v in hs.items()]"
+```
