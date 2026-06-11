@@ -323,6 +323,10 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "top_plane_camera_to_vertical_deg": result.get("top_plane_camera_to_vertical_deg"),
         "object_top_size_mm": result.get("object_top_size_mm"),
         "object_top_size_source": result.get("object_top_size_source"),
+        "near_edge_midpoint_xyz_mm": result.get("near_edge_midpoint_xyz_mm"),
+        "near_edge_midpoint": result.get("near_edge_midpoint"),
+        "box_near_edge_midpoint_xyz_mm": result.get("box_near_edge_midpoint_xyz_mm"),
+        "box_near_edge_midpoint": result.get("box_near_edge_midpoint"),
         "box_head_fraction_from_head": result.get("box_head_fraction_from_head"),
         "box_head_point_xyz_mm": result.get("box_head_point_xyz_mm"),
         "box_head_point": result.get("box_head_point"),
@@ -333,6 +337,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "box_head_one_third_above_xyz_mm": result.get("box_head_one_third_above_xyz_mm"),
         "box_head_one_third_above": result.get("box_head_one_third_above"),
         "robot_alignment": result.get("robot_alignment"),
+        "near_edge_robot_alignment": result.get("near_edge_robot_alignment"),
         "robot_alignment_hypotheses": result.get("robot_alignment_hypotheses"),
         "device": _device_from_result(result),
         "debug_images": result.get("debug_images"),
@@ -462,6 +467,7 @@ def _projected_above_markers() -> list[tuple[str, str, tuple[int, int, int], int
     return [
         ("C", "center_above_xyz_mm", (0, 0, 255), -18),
         ("H", "box_head_point_above_xyz_mm", (255, 0, 255), 20),
+        ("N", "near_edge_midpoint_xyz_mm", (0, 255, 255), 42),
     ]
 
 
@@ -528,7 +534,7 @@ def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
     if drawn == 0:
         cv2.putText(image, "No projected XYZ points", (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
     else:
-        _draw_text(image, "C=center_above  H=head_1/5_above", (12, 28), (255, 255, 255), scale=0.55)
+        _draw_text(image, "C=center_above  H=head_1/5_above  N=near_edge_midpoint", (12, 28), (255, 255, 255), scale=0.55)
         cv2.putText(
             image,
             "Projected from /xyz using u=fx*x/z+cx, v=fx*y/z+cy",
@@ -796,6 +802,12 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
     control = alignment.get("control_hint")
     if not isinstance(control, dict):
         control = {}
+    near_alignment = payload.get("near_edge_robot_alignment")
+    if not isinstance(near_alignment, dict):
+        near_alignment = {}
+    near_target = near_alignment.get("target")
+    if not isinstance(near_target, dict):
+        near_target = {}
 
     label = payload.get("selected_yolo_label") or "-"
     confidence = payload.get("selected_yolo_confidence")
@@ -810,6 +822,8 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
         _summary_tile("长边判定", selected, "看左目四点图上的红色编号"),
         _summary_tile("中心点坐标", _fmt_list(payload.get("center_xyz_mm")), "left_camera_optical: X右 Y下 Z前"),
         _summary_tile("中心上方点", _fmt_list(payload.get("center_above_xyz_mm")), "默认中心点上方 100mm"),
+        _summary_tile("近端边中点", _fmt_list(payload.get("near_edge_midpoint_xyz_mm")), "靠近机器人那条边的中点"),
+        _summary_tile("近端边前向", _fmt_number(near_target.get("ground_forward_mm"), " mm", 1), "微调目标建议 200mm"),
         _summary_tile("直线距离", _fmt_number(target.get("range_from_left_camera_mm"), " mm", 1), "左目光心到中心点"),
         _summary_tile("地面前向", _fmt_number(target.get("ground_forward_mm"), " mm", 1), "Z*sin角度 - Y*cos角度"),
         _summary_tile("地面平面距离", _fmt_number(target.get("ground_distance_mm"), " mm", 1), "sqrt(前向² + 左右²)"),
@@ -846,6 +860,12 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
         control = alignment.get("control_hint")
         if not isinstance(control, dict):
             control = {}
+        near_alignment = item.get("near_edge_robot_alignment")
+        if not isinstance(near_alignment, dict):
+            near_alignment = {}
+        near_target = near_alignment.get("target")
+        if not isinstance(near_target, dict):
+            near_target = {}
         selected = "是" if item.get("selected") else ""
         rows.append(
             "<tr>"
@@ -853,6 +873,7 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
             f"<td>{html_lib.escape(_orientation_cn(name))}</td>"
             f"<td>{html_lib.escape(_fmt_list(item.get('object_top_size_mm'), ' mm'))}</td>"
             f"<td>{html_lib.escape(_fmt_number(item.get('range_from_left_camera_mm'), ' mm', 1))}</td>"
+            f"<td>{html_lib.escape(_fmt_number(near_target.get('ground_forward_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(target.get('ground_forward_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(target.get('right_mm'), ' mm', 1))}</td>"
             f"<td>{html_lib.escape(_fmt_number(control.get('turn_first_yaw_deg'), ' deg', 2))}</td>"
@@ -864,7 +885,7 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
     return (
         "<table>"
         "<thead><tr><th>选中</th><th>长边对应哪组点</th><th>上表面尺寸</th><th>直线距离</th>"
-        "<th>地面前向</th><th>左右偏差</th><th>朝目标转角</th><th>烟盒长轴角</th>"
+        "<th>近端边前向</th><th>中心前向</th><th>左右偏差</th><th>朝目标转角</th><th>烟盒长轴角</th>"
         "<th>重投影误差</th><th>左右深度差</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )

@@ -1135,3 +1135,59 @@ short_x_long_y
 curl -s http://127.0.0.1:18081/xyz \
   | python3 -c "import sys,json; d=json.load(sys.stdin); hs=d['robot_alignment_hypotheses']; [print(k, 'selected=', v['selected'], 'range=', v['range_from_left_camera_mm'], 'turn=', v['robot_alignment']['control_hint']['turn_first_yaw_deg'], 'box_yaw=', v['robot_alignment']['control_hint']['box_parallel_yaw_deg']) for k,v in hs.items()]"
 ```
+
+## 靠近机器人边中点
+
+微调底盘前后距离时不要用中心点，而是使用靠近机器人那条边的中点：
+
+```text
+near_edge_midpoint_xyz_mm
+near_edge_midpoint
+near_edge_robot_alignment
+```
+
+`near_edge_midpoint` 会在上表面四条边的 3D 中点里，选择 `ground_forward_mm` 最小的一条边，也就是更靠近机器人/相机的那条边。
+
+只打印近端边中点坐标和前向距离：
+
+```bash
+curl -s http://127.0.0.1:18081/xyz \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['near_edge_midpoint_xyz_mm'], d['near_edge_robot_alignment']['target']['ground_forward_mm'])"
+```
+
+字段含义：
+
+```text
+near_edge_midpoint_xyz_mm
+  靠近机器人那条边的 3D 中点，坐标系仍是 left_camera_optical。
+
+near_edge_midpoint.edge_point_indices
+  这条边对应四点图里的哪两个点，比如 [2, 3]。
+
+near_edge_robot_alignment.target.ground_forward_mm
+  这条近端边中点投影到地面前向后的距离。底盘前后微调用这个值，默认目标是 200mm。
+```
+
+## G1D 微调服务
+
+微调服务和 YOLO 服务分开运行。YOLO 是 `18081`，微调服务默认是 `18084`。
+
+只看计划，不会动机器人：
+
+```bash
+curl -s http://127.0.0.1:18084/plan
+```
+
+确认执行一个小步：
+
+```bash
+curl -s "http://127.0.0.1:18084/step?confirm=1"
+```
+
+微调服务每次只做一个动作：
+
+```text
+1. 如果烟盒长轴角还没接近 0，先 turn_left / turn_right。
+2. 如果长轴角已经满足阈值，再用 near_edge_robot_alignment.target.ground_forward_mm 调 forward / back。
+3. 近端边前向距离默认目标是 200mm。
+```

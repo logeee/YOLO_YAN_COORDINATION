@@ -368,3 +368,99 @@ http://127.0.0.1:18082/debug
 
 - `docs/cigarette_pose_optical_api.md`
 - `docs/yolo_topface_detector_module.md`
+
+## G1D 位置微调服务
+
+YOLO 服务只负责识别和给坐标；微调底盘另起一个服务，默认端口 `18084`，不会混进 YOLO 服务里。
+
+微调逻辑：
+
+```text
+1. 读取 YOLO /xyz。
+2. 先看烟盒长轴角 box_parallel_yaw_deg，先转动底盘让长轴角接近 0。
+3. 长轴角满足阈值后，再看靠近机器人那条边的中点 near_edge_midpoint。
+4. 用 near_edge_robot_alignment.target.ground_forward_mm 作为前后距离。
+5. 目标距离默认是 200mm。
+6. 每次 /step 只执行一个小动作，执行后重新拍照再判断下一步。
+```
+
+YOLO debug 页面已经显示：
+
+```text
+近端边中点
+近端边前向
+```
+
+`近端边前向` 就是后续底盘前进/后退要追到 `200mm` 的量，不再用中心点前向距离。
+
+手动启动：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/g1d_pose_adjust_service.sh
+```
+
+查看服务状态：
+
+```bash
+curl -s http://127.0.0.1:18084/health
+```
+
+只看计划，不会动机器人：
+
+```bash
+curl -s http://127.0.0.1:18084/plan
+```
+
+看下一步会做什么，但不执行：
+
+```bash
+curl -s http://127.0.0.1:18084/step
+```
+
+确认执行一个小步：
+
+```bash
+curl -s "http://127.0.0.1:18084/step?confirm=1"
+```
+
+紧急停止：
+
+```bash
+curl -s "http://127.0.0.1:18084/stop?confirm=1"
+```
+
+临时修改目标距离，比如改成 `220mm`：
+
+```bash
+curl -s "http://127.0.0.1:18084/plan?target_near_edge_forward_mm=220"
+```
+
+临时指定 YOLO 标签：
+
+```bash
+curl -s "http://127.0.0.1:18084/plan?label=XiongMao"
+curl -s "http://127.0.0.1:18084/plan?label=Xizi_Liqun"
+```
+
+开机自启动：
+
+```bash
+sudo cp systemd/g1d-pose-adjust.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now g1d-pose-adjust.service
+```
+
+日志：
+
+```bash
+journalctl -u g1d-pose-adjust.service -f
+```
+
+底层命令来自 `~/unitree_sdk2/build/bin/g1d_simple_control`，默认使用 `eth0`：
+
+```text
+turn_left / turn_right  用于让烟盒长轴角接近 0
+forward / back          用于让近端边前向距离接近 200mm
+stop                    停止
+```

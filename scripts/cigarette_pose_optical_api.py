@@ -44,7 +44,7 @@ from auto_pnp_cuboid_depth import (
     solve_depth,
 )
 from yolo_topface_detector import YOLO_SELECT_METHODS, detect_yolo_points_from_image
-from cigarette_pose_alignment import compute_robot_alignment
+from cigarette_pose_alignment import compute_robot_alignment, configured_ground_basis
 
 
 ORIENTATIONS = ("long_x_short_y", "short_x_long_y")
@@ -366,7 +366,12 @@ def scale_pose_to_known_range(
     )
     if original_opencv is not None:
         updated["range_override"]["pnp_unscaled_opencv_camera_xyz_mm"] = original_opencv
-    for key in ("box_head_point_xyz_mm", "box_head_one_third_xyz_mm"):
+    for key in (
+        "box_head_point_xyz_mm",
+        "box_head_one_third_xyz_mm",
+        "near_edge_midpoint_xyz_mm",
+        "box_near_edge_midpoint_xyz_mm",
+    ):
         if key in pose:
             original_point = [float(value) for value in pose[key]]
             scaled_point = [round(float(value) * scale, 1) for value in original_point]
@@ -381,6 +386,18 @@ def scale_pose_to_known_range(
             box_head["y_mm"] = scaled_point[1]
             box_head["z_mm"] = scaled_point[2]
             updated[detail_key] = box_head
+    for detail_key in ("near_edge_midpoint", "box_near_edge_midpoint"):
+        if isinstance(updated.get(detail_key), dict) and "near_edge_midpoint_xyz_mm" in updated:
+            near_edge = dict(updated[detail_key])
+            scaled_point = updated["near_edge_midpoint_xyz_mm"]
+            near_edge["point_xyz_mm"] = scaled_point
+            near_edge["x_mm"] = scaled_point[0]
+            near_edge["y_mm"] = scaled_point[1]
+            near_edge["z_mm"] = scaled_point[2]
+            for value_key in ("range_from_left_camera_mm", "ground_forward_mm", "right_mm", "vertical_down_mm"):
+                if value_key in near_edge:
+                    near_edge[value_key] = round(float(near_edge[value_key]) * scale, 1)
+            updated[detail_key] = near_edge
     return updated
 
 
@@ -467,6 +484,62 @@ def _box_head_one_third_point(
         "head_range_mm": round(float(ranges[head_index]), 1),
         "tail_range_mm": round(float(ranges[tail_index]), 1),
         "head_to_tail_unit_xyz": _round_list(direction_unit.tolist(), 6),
+    }
+
+
+def _top_face_near_edge_midpoint(
+    depth: dict[str, Any],
+    width_m: float,
+    height_m: float,
+    camera_to_vertical_deg: float = DEFAULT_CAMERA_TO_VERTICAL_DEG,
+) -> dict[str, Any]:
+    edge_locals = [
+        ("edge_0_1", [0, 1], [0.0, -height_m / 2.0, 0.0]),
+        ("edge_1_2", [1, 2], [width_m / 2.0, 0.0, 0.0]),
+        ("edge_2_3", [2, 3], [0.0, height_m / 2.0, 0.0]),
+        ("edge_3_0", [3, 0], [-width_m / 2.0, 0.0, 0.0]),
+    ]
+    local_points = np.asarray([item[2] for item in edge_locals], dtype=np.float64)
+    midpoints_xyz_mm = _transform_local_to_optical_mm(
+        local_points,
+        depth["rotation_matrix"],
+        depth["center_xyz_m"],
+    )
+    basis = configured_ground_basis(camera_to_vertical_deg)
+    x_right = np.asarray(basis["x_right_unit"], dtype=np.float64)
+    ground_forward = np.asarray(basis["ground_forward_unit"], dtype=np.float64)
+    vertical_down = np.asarray(basis["vertical_down_unit"], dtype=np.float64)
+
+    edges: list[dict[str, Any]] = []
+    for (name, indices, _local), xyz in zip(edge_locals, midpoints_xyz_mm):
+        ground_forward_mm = float(np.dot(xyz, ground_forward))
+        edge = {
+            "edge_name": name,
+            "edge_point_indices": indices,
+            "midpoint_xyz_mm": _round_list(xyz.tolist()),
+            "range_from_left_camera_mm": round(float(np.linalg.norm(xyz)), 1),
+            "ground_forward_mm": round(ground_forward_mm, 1),
+            "right_mm": round(float(np.dot(xyz, x_right)), 1),
+            "vertical_down_mm": round(float(np.dot(xyz, vertical_down)), 1),
+        }
+        edges.append(edge)
+
+    near = min(edges, key=lambda item: float(item["ground_forward_mm"]))
+    point_xyz = near["midpoint_xyz_mm"]
+    return {
+        "point_xyz_mm": point_xyz,
+        "x_mm": point_xyz[0],
+        "y_mm": point_xyz[1],
+        "z_mm": point_xyz[2],
+        "edge_name": near["edge_name"],
+        "edge_point_indices": near["edge_point_indices"],
+        "selection_method": "minimum_ground_forward_mm_among_top_face_edges",
+        "range_from_left_camera_mm": near["range_from_left_camera_mm"],
+        "ground_forward_mm": near["ground_forward_mm"],
+        "right_mm": near["right_mm"],
+        "vertical_down_mm": near["vertical_down_mm"],
+        "camera_to_vertical_deg": round(float(camera_to_vertical_deg), 3),
+        "all_edge_midpoints": edges,
     }
 
 
@@ -595,6 +668,7 @@ def estimate_pose_from_left_points(
     known_range_mm: float | None = None,
     lens_glass_to_optical_center_mm: float = 0.0,
     box_head_fraction_from_head: float = DEFAULT_BOX_HEAD_FRACTION_FROM_HEAD,
+    camera_to_vertical_deg: float = DEFAULT_CAMERA_TO_VERTICAL_DEG,
 ) -> dict[str, Any]:
     """Return pose from four left-image top-face points.
 
@@ -615,6 +689,12 @@ def estimate_pose_from_left_points(
         width_m,
         height_m,
         fraction_from_head=box_head_fraction_from_head,
+    )
+    near_edge_midpoint = _top_face_near_edge_midpoint(
+        depth,
+        width_m,
+        height_m,
+        camera_to_vertical_deg=camera_to_vertical_deg,
     )
     opencv_camera_xyz_mm = _mm_list(depth["center_xyz_m"])
     pnp_center_xyz_mm = _opencv_camera_to_optical_xyz(opencv_camera_xyz_mm)
@@ -647,6 +727,10 @@ def estimate_pose_from_left_points(
         "box_head_fraction_from_head": round(float(box_head_fraction_from_head), 6),
         "box_head_point_xyz_mm": box_head_point["point_xyz_mm"],
         "box_head_point": box_head_point,
+        "near_edge_midpoint_xyz_mm": near_edge_midpoint["point_xyz_mm"],
+        "near_edge_midpoint": near_edge_midpoint,
+        "box_near_edge_midpoint_xyz_mm": near_edge_midpoint["point_xyz_mm"],
+        "box_near_edge_midpoint": near_edge_midpoint,
         "top_plane_up_unit_xyz": _round_list(top_plane_up_unit_xyz, 6),
         "top_plane_up_source": "pnp_top_face_normal",
         "top_plane_camera_to_vertical_deg": round(_camera_to_vertical_deg_from_up_unit(top_plane_up_unit_xyz), 3),
@@ -768,6 +852,7 @@ def _solve_view_hypotheses(
     config: PoseConfig,
     prefix: str,
     box_head_fraction_from_head: float = DEFAULT_BOX_HEAD_FRACTION_FROM_HEAD,
+    camera_to_vertical_deg: float = DEFAULT_CAMERA_TO_VERTICAL_DEG,
 ) -> dict[str, dict[str, Any]]:
     return {
         orientation: estimate_pose_from_left_points(
@@ -776,6 +861,7 @@ def _solve_view_hypotheses(
             orientation=orientation,
             points_order="ordered",
             box_head_fraction_from_head=box_head_fraction_from_head,
+            camera_to_vertical_deg=camera_to_vertical_deg,
         )
         for orientation in ORIENTATIONS
     }
@@ -832,6 +918,7 @@ def _evaluate_point_candidate(
         config,
         "left",
         box_head_fraction_from_head=box_head_fraction_from_head,
+        camera_to_vertical_deg=DEFAULT_CAMERA_TO_VERTICAL_DEG,
     )
     right_by_orientation = (
         _solve_view_hypotheses(
@@ -839,6 +926,7 @@ def _evaluate_point_candidate(
             config,
             "right",
             box_head_fraction_from_head=box_head_fraction_from_head,
+            camera_to_vertical_deg=DEFAULT_CAMERA_TO_VERTICAL_DEG,
         )
         if right_points is not None
         else None
@@ -909,11 +997,24 @@ def _build_robot_alignment_hypotheses(
                 "ok": False,
                 "error": str(exc),
             }
+        try:
+            near_edge_alignment = compute_robot_alignment(
+                pose,
+                camera_to_vertical_deg=camera_to_vertical_deg,
+                target_key="near_edge_midpoint_xyz_mm",
+            )
+        except Exception as exc:
+            near_edge_alignment = {
+                "ok": False,
+                "error": str(exc),
+            }
         hypotheses[orientation] = {
             "selected": orientation == selected_orientation,
             "meaning": _orientation_meaning(orientation),
             "object_top_size_mm": pose.get("object_top_size_mm"),
             "center_xyz_mm": pose.get("center_xyz_mm"),
+            "near_edge_midpoint_xyz_mm": pose.get("near_edge_midpoint_xyz_mm"),
+            "near_edge_midpoint": pose.get("near_edge_midpoint"),
             "range_from_left_camera_mm": pose.get("range_from_left_camera_mm"),
             "left_reprojection_error_px": pose.get("reprojection_error_px"),
             "right_reprojection_error_px": right_pose.get("reprojection_error_px") if right_pose else None,
@@ -924,6 +1025,7 @@ def _build_robot_alignment_hypotheses(
             ),
             "box_head_point": pose.get("box_head_point"),
             "robot_alignment": alignment,
+            "near_edge_robot_alignment": near_edge_alignment,
         }
     return hypotheses
 
@@ -1414,6 +1516,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         config,
         "left",
         box_head_fraction_from_head=args.box_head_fraction_from_head,
+        camera_to_vertical_deg=args.camera_to_vertical_deg,
     )
     right_by_orientation = (
         _solve_view_hypotheses(
@@ -1421,6 +1524,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             config,
             "right",
             box_head_fraction_from_head=args.box_head_fraction_from_head,
+            camera_to_vertical_deg=args.camera_to_vertical_deg,
         )
         if right_points is not None
         else None
@@ -1570,6 +1674,10 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "points_px": selected_left["points_px"],
         "object_top_size_mm": selected_left["object_top_size_mm"],
         "object_top_size_source": object_top_size_source,
+        "near_edge_midpoint_xyz_mm": selected_left["near_edge_midpoint_xyz_mm"],
+        "near_edge_midpoint": selected_left["near_edge_midpoint"],
+        "box_near_edge_midpoint_xyz_mm": selected_left["box_near_edge_midpoint_xyz_mm"],
+        "box_near_edge_midpoint": selected_left["box_near_edge_midpoint"],
         "box_head_fraction_from_head": selected_left["box_head_fraction_from_head"],
         "box_head_point_xyz_mm": selected_left["box_head_point_xyz_mm"],
         "box_head_point": selected_left["box_head_point"],
@@ -1638,6 +1746,17 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
     except Exception as exc:
         result["robot_alignment"] = {
+            "ok": False,
+            "error": str(exc),
+        }
+    try:
+        result["near_edge_robot_alignment"] = compute_robot_alignment(
+            result,
+            camera_to_vertical_deg=args.camera_to_vertical_deg,
+            target_key="near_edge_midpoint_xyz_mm",
+        )
+    except Exception as exc:
+        result["near_edge_robot_alignment"] = {
             "ok": False,
             "error": str(exc),
         }
