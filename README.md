@@ -433,3 +433,23 @@ curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 ```
 
 更多说明见 `docs/G1D_POSE_ADJUST_SERVICE.md`。
+
+## G1-D 烟盒相对位置可视化
+
+这是独立页面，不改 YOLO 服务。启动：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/g1d_cigarette_visualizer_server.sh
+```
+
+打开：
+
+```text
+http://127.0.0.1:18085/
+http://<机器人IP>:18085/
+```
+
+当前没有 URDF 引用的 `meshes/*.STL`，页面会显示 G1-D 骨架和代理体。烟盒厚度没有实测值，默认 `20mm`，页面里可以改。
+
+更多说明见 `docs/G1D_CIGARETTE_VISUALIZER.md`。

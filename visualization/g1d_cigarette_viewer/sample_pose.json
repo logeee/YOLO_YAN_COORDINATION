@@ -1,0 +1,101 @@
+{
+  "ok": true,
+  "algorithm": "sample_yolo_seg_pnp",
+  "frame": "left_camera_optical",
+  "selected_yolo_label": "Xizi_Liqun",
+  "selected_orientation": "short_x_long_y",
+  "selected_yolo_confidence": 0.94,
+  "center_xyz_mm": [
+    92.0,
+    89.5,
+    730.2
+  ],
+  "range_from_left_camera_mm": 741.4,
+  "object_top_size_mm": [
+    89.0,
+    280.0
+  ],
+  "object_top_size_source": {
+    "source": "sample",
+    "class_name": "Xizi_Liqun",
+    "long_side_mm": 280.0,
+    "short_side_mm": 89.0
+  },
+  "near_edge_midpoint_xyz_mm": [
+    76.5,
+    178.3,
+    609.5
+  ],
+  "box_head_point_xyz_mm": [
+    131.1,
+    34.3,
+    762.8
+  ],
+  "box_head_point": {
+    "long_axis": "object_y",
+    "head_to_tail_unit_xyz": [
+      -0.306,
+      0.228,
+      -0.924
+    ],
+    "fraction_from_head": 0.2
+  },
+  "robot_alignment": {
+    "ok": true,
+    "frame": "left_camera_optical",
+    "camera_to_vertical_deg": 42.4,
+    "basis": {
+      "x_right_unit_xyz": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "ground_forward_unit_xyz": [
+        0.0,
+        -0.738455,
+        0.674303
+      ],
+      "vertical_down_unit_xyz": [
+        0.0,
+        0.674303,
+        0.738455
+      ],
+      "vertical_up_unit_xyz": [
+        0.0,
+        -0.674303,
+        -0.738455
+      ]
+    },
+    "target": {
+      "xyz_mm": [
+        92.0,
+        89.5,
+        730.2
+      ],
+      "right_mm": 92.0,
+      "ground_forward_mm": 426.3,
+      "vertical_down_mm": 599.5,
+      "ground_distance_mm": 436.1,
+      "bearing_right_deg": 12.17
+    },
+    "box_axis": {
+      "axis_yaw_head_to_tail_deg": -18.0,
+      "axis_yaw_mod180_deg": -18.0,
+      "cmd_vel_yaw_to_parallel_axis_deg": 18.0
+    },
+    "control_hint": {
+      "turn_first_yaw_deg": -12.17,
+      "forward_distance_m": 0.4263,
+      "lateral_error_m": 0.092,
+      "height_down_m": 0.5995,
+      "box_parallel_yaw_deg": 18.0
+    }
+  },
+  "near_edge_robot_alignment": {
+    "target": {
+      "right_mm": 76.5,
+      "ground_forward_mm": 279.1,
+      "vertical_down_mm": 570.2
+    }
+  }
+}
