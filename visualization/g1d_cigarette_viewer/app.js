@@ -821,7 +821,7 @@ function getCameraFrame(pose = null) {
   const origin = parentPosition.clone().add(localOffset.clone().applyQuaternion(parentQuaternion));
   const cameraToVerticalDeg = Number(
     pose?.g1d_visualization?.camera?.camera_to_vertical_deg
-      ?? pose?.top_plane_camera_to_vertical_deg
+      ?? pose?.robot_alignment?.camera_to_vertical_deg
       ?? DEFAULT_CAMERA_TO_VERTICAL_DEG,
   );
   const localAxes = cameraOpticalAxesInHeadLocal(cameraToVerticalDeg);
@@ -830,6 +830,7 @@ function getCameraFrame(pose = null) {
     parentPosition,
     parentQuaternion,
     localOffset,
+    cameraToVerticalDeg,
     axes: {
       xRight: localAxes.xRight.clone().applyQuaternion(parentQuaternion).normalize(),
       yDown: localAxes.yDown.clone().applyQuaternion(parentQuaternion).normalize(),
@@ -861,7 +862,7 @@ function addCameraOpticalAxes(group, frame) {
   group.add(new THREE.ArrowHelper(axes.zForward, origin, 0.22, 0x4f8cff, 0.045, 0.025));
   addLabel(group, "cam X", origin.clone().add(axes.xRight.clone().multiplyScalar(0.18)), "#ff777b");
   addLabel(group, "cam Y", origin.clone().add(axes.yDown.clone().multiplyScalar(0.18)), "#53e28d");
-  addLabel(group, "cam Z 47.6°", origin.clone().add(axes.zForward.clone().multiplyScalar(0.25)), "#72a3ff");
+  addLabel(group, `cam Z ${Number(frame.cameraToVerticalDeg).toFixed(1)}°`, origin.clone().add(axes.zForward.clone().multiplyScalar(0.25)), "#72a3ff");
 }
 
 function cameraOpticalAxesInHeadLocal(cameraToVerticalDeg) {
@@ -1066,7 +1067,7 @@ function writeSceneState() {
     cameraMountM: vectorToArray(getCameraMount()),
     cameraLocalOffsetM: vectorToArray(getCameraFrame(currentPose).localOffset),
     cameraParentLink: DEFAULT_CAMERA_PARENT_LINK,
-    cameraOpticalAngleDeg: DEFAULT_CAMERA_TO_VERTICAL_DEG,
+    cameraOpticalAngleDeg: roundNumber(getCameraFrame(currentPose).cameraToVerticalDeg, 3),
     robotStateSource: window.__g1dVisualizerState.robotStateSource || null,
     robotStateUpdatedAt: window.__g1dVisualizerState.robotStateUpdatedAt || null,
     appliedJointCount: window.__g1dVisualizerState.appliedJointCount || 0,
