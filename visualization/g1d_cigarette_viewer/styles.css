@@ -109,8 +109,8 @@ textarea:focus {
   gap: 10px;
 }
 
-.view-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+.data-row {
+  grid-template-columns: 1fr;
 }
 
 button {

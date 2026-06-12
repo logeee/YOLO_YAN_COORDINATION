@@ -35,13 +35,9 @@ const dom = {
   cameraY: document.querySelector("#cameraY"),
   cameraZ: document.querySelector("#cameraZ"),
   fetchBtn: document.querySelector("#fetchBtn"),
-  sampleBtn: document.querySelector("#sampleBtn"),
-  applyBtn: document.querySelector("#applyBtn"),
   normalViewBtn: document.querySelector("#normalViewBtn"),
   topViewBtn: document.querySelector("#topViewBtn"),
   sideViewBtn: document.querySelector("#sideViewBtn"),
-  cameraViewBtn: document.querySelector("#cameraViewBtn"),
-  jsonInput: document.querySelector("#jsonInput"),
   metricLabel: document.querySelector("#metricLabel"),
   metricForward: document.querySelector("#metricForward"),
   metricVertical: document.querySelector("#metricVertical"),
@@ -56,9 +52,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0c1014);
 
 const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 20);
-camera.position.set(1.35, -1.35, 0.92);
+camera.position.set(1.85, -1.75, 1.24);
 camera.up.set(0, 0, 1);
-camera.lookAt(0.28, 0.0, 0.24);
+camera.lookAt(0.2, -0.02, 0.68);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -68,7 +64,7 @@ dom.viewport.appendChild(renderer.domElement);
 const stlLoader = new STLLoader();
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.28, 0.0, 0.24);
+controls.target.set(0.2, -0.02, 0.68);
 controls.enableDamping = false;
 controls.enableRotate = true;
 controls.minDistance = 0.45;
@@ -123,12 +119,9 @@ async function init() {
 
 function bindEvents() {
   dom.fetchBtn.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
-  dom.sampleBtn.addEventListener("click", loadSample);
-  dom.applyBtn.addEventListener("click", applyJsonFromInput);
   dom.normalViewBtn.addEventListener("click", () => setView("normal"));
   dom.topViewBtn.addEventListener("click", () => setView("top"));
   dom.sideViewBtn.addEventListener("click", () => setView("side"));
-  dom.cameraViewBtn.addEventListener("click", () => setView("camera"));
   for (const input of [dom.thicknessMm]) {
     input.addEventListener("input", () => {
       updateCameraMarker();
@@ -167,7 +160,7 @@ async function loadRobot() {
 
 async function loadSample() {
   const pose = await fetch("./sample_pose.json").then((res) => res.json());
-  applyPose(pose, "已加载示例");
+  applyPose(pose, "已加载默认数据");
 }
 
 async function fetchPose({ fallbackToSample = false, silent = false } = {}) {
@@ -187,7 +180,7 @@ async function fetchPose({ fallbackToSample = false, silent = false } = {}) {
   } catch (error) {
     if (fallbackToSample) {
       await loadSample();
-      setStatus(`YOLO 失败，已加载示例：${error.message}`);
+      setStatus(`YOLO 失败，已加载默认数据：${error.message}`);
       return true;
     }
     if (!silent) {
@@ -215,18 +208,8 @@ async function fetchRobotState({ silent = false } = {}) {
   }
 }
 
-function applyJsonFromInput() {
-  try {
-    const pose = JSON.parse(dom.jsonInput.value);
-    applyPose(pose, "已应用 JSON");
-  } catch (error) {
-    setStatus(`JSON 错误：${error.message}`);
-  }
-}
-
 function applyPose(pose, status) {
   currentPose = pose;
-  dom.jsonInput.value = JSON.stringify(pose, null, 2);
   renderPose(pose);
   updateMetrics(pose);
   setStatus(status);
@@ -971,34 +954,27 @@ function frameScene(target) {
 
 function setView(mode, immediate = true) {
   currentView = mode;
-  const focus = lastFocus.clone();
-  const spread = Math.max(1.0, Math.hypot(focus.x, focus.y) * 2.4 + 0.75);
+  const focus = new THREE.Vector3(0.2, -0.02, 0.68);
   if (mode === "top") {
     camera.up.set(1, 0, 0);
-    camera.position.set(focus.x, focus.y, Math.max(1.55, spread * 1.45));
+    camera.position.set(0.22, -0.02, 3.05);
     controls.target.copy(focus);
     controls.enableRotate = false;
-  } else if (mode === "camera") {
-    const frame = getCameraFrame(currentPose);
-    camera.up.copy(frame.axes.yDown).multiplyScalar(-1);
-    camera.position.copy(frame.origin);
-    controls.target.copy(frame.origin.clone().add(frame.axes.zForward));
-    controls.enableRotate = true;
   } else if (mode === "side") {
     camera.up.set(0, 0, 1);
-    camera.position.set(focus.x - spread * 1.25, focus.y - 0.06, 0.72);
-    controls.target.set(focus.x, focus.y, 0.28);
+    camera.position.set(0.2, -3.1, 0.9);
+    controls.target.copy(focus);
     controls.enableRotate = true;
   } else {
     camera.up.set(0, 0, 1);
-    camera.position.set(focus.x + spread * 0.88, focus.y - spread * 0.78, 0.78);
-    controls.target.set(focus.x + 0.08, focus.y, 0.20);
+    camera.position.set(1.85, -1.75, 1.24);
+    controls.target.copy(focus);
     controls.enableRotate = true;
   }
   camera.lookAt(controls.target);
   controls.update();
   if (immediate) {
-    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : mode === "camera" ? "左目视角" : "正常地面视角");
+    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "正常地面视角");
   }
 }
 
