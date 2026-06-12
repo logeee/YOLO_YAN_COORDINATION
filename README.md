@@ -436,7 +436,7 @@ curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 
 ## G1-D 烟盒相对位置可视化
 
-这是独立页面，不改 YOLO 服务。启动：
+这是 G1-D 和烟盒相对位置的 3D 可视化。当前先作为独立页面测试，后续目标是嵌到 YOLO `/debug` 页面里。启动：
 
 ```bash
 cd ~/YOLO_YAN_COORDINATION
@@ -450,6 +450,8 @@ http://127.0.0.1:18085/
 http://<机器人IP>:18085/
 ```
 
-页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认会读取 YOLO `/xyz`，失败时才用示例数据。左目相机绑定到 `head_link`，并画出 `42.4°` optical 坐标轴。机器人状态从 `/api/robot_state` 读取，可驱动立柱和 URDF joint；当前默认立柱展开量是 `420mm`。
+页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认读取 YOLO `/xyz` 的 `g1d_visualization` 数据，失败时才用示例数据。左目相机绑定到 `head_link`，并画出 `42.4°` optical 坐标轴。机器人状态从 `/api/robot_state` 或后续本体 `joint states` 读取，可驱动立柱和 URDF joint；当前默认立柱展开量是 `420mm`。
+
+YOLO `/debug` 页面现在也会显示一块 `G1-D 可视化需要的数据`，包括 joint states 需求、朝目标转角、烟盒长轴角、中心垂直距离、中心地面前向和近端边地面前向。
 
 更多说明见 `docs/G1D_CIGARETTE_VISUALIZER.md`。

@@ -300,6 +300,96 @@ def _left_yolo_selection_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _selected_yolo_candidate(result: dict[str, Any]) -> dict[str, Any]:
+    point_adjustments = result.get("point_adjustments")
+    if not isinstance(point_adjustments, dict):
+        return {}
+    left_yolo = point_adjustments.get("left_yolo")
+    return left_yolo if isinstance(left_yolo, dict) else {}
+
+
+def _g1d_visualization_data(result: dict[str, Any]) -> dict[str, Any]:
+    alignment = result.get("robot_alignment")
+    if not isinstance(alignment, dict):
+        alignment = {}
+    target = alignment.get("target")
+    if not isinstance(target, dict):
+        target = {}
+    control = alignment.get("control_hint")
+    if not isinstance(control, dict):
+        control = {}
+    box_axis = alignment.get("box_axis")
+    if not isinstance(box_axis, dict):
+        box_axis = {}
+    near_alignment = result.get("near_edge_robot_alignment")
+    if not isinstance(near_alignment, dict):
+        near_alignment = {}
+    near_target = near_alignment.get("target")
+    if not isinstance(near_target, dict):
+        near_target = {}
+    selected_yolo = _selected_yolo_candidate(result)
+    server = result.get("server")
+    if not isinstance(server, dict):
+        server = {}
+
+    return {
+        "schema_version": 1,
+        "source": "yolo_xyz_plus_external_joint_states",
+        "ok": bool(result.get("ok")),
+        "yolo": {
+            "label": result.get("selected_yolo_label"),
+            "class_id": result.get("selected_yolo_class_id"),
+            "confidence": result.get("selected_yolo_confidence"),
+            "candidate_index": selected_yolo.get("selected_candidate_index"),
+            "raw_yolo_index": selected_yolo.get("raw_yolo_index"),
+            "points_px": selected_yolo.get("points_px"),
+            "box_xyxy": selected_yolo.get("box_xyxy"),
+        },
+        "box": {
+            "center_xyz_mm": result.get("center_xyz_mm"),
+            "near_edge_midpoint_xyz_mm": result.get("near_edge_midpoint_xyz_mm"),
+            "head_point_xyz_mm": result.get("box_head_point_xyz_mm"),
+            "head_to_tail_unit_xyz": _nested(result, "box_head_point", "head_to_tail_unit_xyz"),
+            "object_top_size_mm": result.get("object_top_size_mm"),
+            "selected_orientation": result.get("selected_orientation"),
+            "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
+        },
+        "metrics": {
+            "turn_to_target_yaw_deg": control.get("turn_first_yaw_deg"),
+            "turn_to_target_yaw_rad": control.get("turn_first_yaw_rad"),
+            "box_long_axis_yaw_deg": control.get("box_parallel_yaw_deg"),
+            "box_long_axis_yaw_rad": control.get("box_parallel_yaw_rad"),
+            "box_axis_yaw_mod180_deg": box_axis.get("axis_yaw_mod180_deg"),
+            "center_vertical_down_mm": target.get("vertical_down_mm"),
+            "center_ground_forward_mm": target.get("ground_forward_mm"),
+            "near_edge_ground_forward_mm": near_target.get("ground_forward_mm"),
+            "right_mm": target.get("right_mm"),
+            "ground_distance_mm": target.get("ground_distance_mm"),
+        },
+        "camera": {
+            "frame": "left_camera_optical",
+            "mount_parent_link": "head_link",
+            "camera_to_vertical_deg": alignment.get("camera_to_vertical_deg")
+            or result.get("top_plane_camera_to_vertical_deg"),
+            "basis": alignment.get("basis"),
+        },
+        "robot_state": {
+            "source": "external_g1d_joint_states",
+            "provided_by_yolo": False,
+            "required_for_visual_model": True,
+            "accepted_shapes": [
+                {"joints": {"joint_name": "value_in_urdf_units"}},
+                {"joint_states": {"name": ["joint_name"], "position": ["value_in_urdf_units"]}},
+            ],
+            "units": "prismatic=m, revolute_or_continuous=rad",
+        },
+        "server": {
+            "request_id": server.get("request_id"),
+            "elapsed_ms": server.get("elapsed_ms"),
+        },
+    }
+
+
 def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
     compact = {
         "ok": bool(result.get("ok")),
@@ -339,6 +429,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "robot_alignment": result.get("robot_alignment"),
         "near_edge_robot_alignment": result.get("near_edge_robot_alignment"),
         "robot_alignment_hypotheses": result.get("robot_alignment_hypotheses"),
+        "g1d_visualization": result.get("g1d_visualization") or _g1d_visualization_data(result),
         "device": _device_from_result(result),
         "debug_images": result.get("debug_images"),
         "error_code": result.get("error_code"),
@@ -375,6 +466,7 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
         "model_cache_size": len(YOLO_MODEL_CACHE),
     }
     result["server"] = server_info
+    result["g1d_visualization"] = _g1d_visualization_data(result)
     LATEST_RESULT = result
     _remember_result(result)
     if compact:
@@ -893,6 +985,108 @@ def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
     )
 
 
+def _visualization_row(source: str, label: str, value: str, note: str) -> str:
+    return (
+        "<tr>"
+        f"<td>{html_lib.escape(source)}</td>"
+        f"<td>{html_lib.escape(label)}</td>"
+        f"<td><strong>{html_lib.escape(value)}</strong></td>"
+        f"<td>{html_lib.escape(note)}</td>"
+        "</tr>"
+    )
+
+
+def _g1d_visualization_table(payload: dict[str, Any]) -> str:
+    data = payload.get("g1d_visualization")
+    if not isinstance(data, dict):
+        data = _g1d_visualization_data(payload)
+    yolo = data.get("yolo") if isinstance(data.get("yolo"), dict) else {}
+    box = data.get("box") if isinstance(data.get("box"), dict) else {}
+    metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+    camera = data.get("camera") if isinstance(data.get("camera"), dict) else {}
+    robot_state = data.get("robot_state") if isinstance(data.get("robot_state"), dict) else {}
+
+    rows = [
+        _visualization_row(
+            "YOLO",
+            "选中目标",
+            f"{yolo.get('label') or '-'} / conf {_fmt_number(yolo.get('confidence'), '', 3)}",
+            "当前用于 PnP 和相对位置计算的那个 mask",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "中心点坐标",
+            _fmt_list(box.get("center_xyz_mm")),
+            "烟盒上表面中心点，left_camera_optical 坐标",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "近端边中点",
+            _fmt_list(box.get("near_edge_midpoint_xyz_mm")),
+            "靠近机器人那条边的中点，底盘距离优先看这个",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "朝目标转角",
+            _fmt_number(metrics.get("turn_to_target_yaw_deg"), " deg", 2),
+            "机器人先面向目标中心需要转的角度",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "烟盒长轴角",
+            _fmt_number(metrics.get("box_long_axis_yaw_deg"), " deg", 2),
+            "烟盒长轴相对机器人前方的无向夹角",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "中心垂直距离",
+            _fmt_number(metrics.get("center_vertical_down_mm"), " mm", 1),
+            "沿地面垂直方向到烟盒上表面中心",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "中心地面前向",
+            _fmt_number(metrics.get("center_ground_forward_mm"), " mm", 1),
+            "中心点投影到地面前向方向的距离",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "近端边地面前向",
+            _fmt_number(metrics.get("near_edge_ground_forward_mm"), " mm", 1),
+            "调底盘前后距离更建议用这个，目标一般是 200mm",
+        ),
+        _visualization_row(
+            "YOLO/PnP",
+            "左右偏差",
+            _fmt_number(metrics.get("right_mm"), " mm", 1),
+            "正数表示目标在机器人右侧",
+        ),
+        _visualization_row(
+            "相机模型",
+            "left camera",
+            f"{camera.get('mount_parent_link') or 'head_link'} / {_fmt_number(camera.get('camera_to_vertical_deg'), ' deg', 1)}",
+            "相机挂在头部 link，光轴使用 42.4° 安装角",
+        ),
+        _visualization_row(
+            "本体状态",
+            "joint states",
+            "外部读取",
+            "YOLO 不产生关节角；3D 嵌入时要从本体 joint states 同步",
+        ),
+        _visualization_row(
+            "本体状态",
+            "joint 单位",
+            str(robot_state.get("units") or "-"),
+            "prismatic 用米，旋转关节用弧度，按 URDF joint 名称驱动模型",
+        ),
+    ]
+    return (
+        "<table class=\"visualization-data\">"
+        "<thead><tr><th>来源</th><th>数据</th><th>当前值</th><th>用途</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 ORIENTATION_DISPLAY_ORDER = ("long_x_short_y", "short_x_long_y")
 
 
@@ -974,6 +1168,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
   <div class="status">{status_line}</div>
   <h2>关键数据</h2>
   {_key_summary_html(payload)}
+  <h2>G1-D 可视化需要的数据</h2>
+  {_g1d_visualization_table(payload)}
   <h2>横竖两套假设对比</h2>
   {_alignment_hypotheses_table(payload)}
   <div class="grid">{image_cards}</div>

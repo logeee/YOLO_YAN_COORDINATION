@@ -1,6 +1,12 @@
 # G1-D 烟盒相对位置可视化
 
-这是独立可视化服务，不改 YOLO 推理和微调服务。
+这是 G1-D 和烟盒相对位置的 3D 可视化。当前先作为独立页面测试，后续目标是嵌到 YOLO `/debug` 页面里。
+
+核心原则：
+
+- 烟盒位置、方向、距离来自 YOLO `/xyz`。
+- 机器人模型姿态来自本体 `joint states`。
+- 可视化层只消费这两类数据，不重新做 YOLO 识别，也不重新算 PnP。
 
 ## 启动
 
@@ -41,6 +47,39 @@ http://192.168.60.121:18081/xyz
 也可以选择 `XiongMao`、`Xizi_Liqun` 或自动类别。
 页面里的 `自动 YOLO` 默认打开，会按刷新间隔持续读取 `/xyz`。
 
+YOLO `/xyz` 里会返回一个精简对象：
+
+```json
+{
+  "g1d_visualization": {
+    "yolo": {},
+    "box": {},
+    "metrics": {},
+    "camera": {},
+    "robot_state": {}
+  }
+}
+```
+
+后续嵌入 `/debug` 页面时，3D 组件优先读取这个对象。
+
+## 关键字段
+
+3D 展示和后续微调主要用这些数据：
+
+| 字段 | 来源 | 用途 |
+| --- | --- | --- |
+| `joint states` | G1-D 本体 | 驱动 URDF 关节、立柱高度和姿态 |
+| `g1d_visualization.metrics.turn_to_target_yaw_deg` | YOLO/PnP | 机器人朝目标中心需要转的角 |
+| `g1d_visualization.metrics.box_long_axis_yaw_deg` | YOLO/PnP | 烟盒长轴相对机器人前方的角 |
+| `g1d_visualization.metrics.center_vertical_down_mm` | YOLO/PnP | 地面垂直方向到烟盒上表面中心的距离 |
+| `g1d_visualization.metrics.center_ground_forward_mm` | YOLO/PnP | 中心点的地面前向距离 |
+| `g1d_visualization.metrics.near_edge_ground_forward_mm` | YOLO/PnP | 近端边中点的地面前向距离，底盘距离微调优先用这个 |
+| `g1d_visualization.box.center_xyz_mm` | YOLO/PnP | 烟盒中心点，left camera optical 坐标 |
+| `g1d_visualization.box.near_edge_midpoint_xyz_mm` | YOLO/PnP | 靠近机器人那条边的中点 |
+| `g1d_visualization.camera.mount_parent_link` | 固定配置 | left camera 挂在 `head_link` |
+| `g1d_visualization.camera.camera_to_vertical_deg` | 固定配置 | left camera 光轴与地面垂直方向夹角，当前 42.4° |
+
 ## 相机
 
 左目相机默认绑定到 URDF 的 `head_link`，再叠加页面里的相机偏移：
@@ -80,6 +119,17 @@ camera = head_link + camera_offset
 ```
 
 后续如果有真实状态服务，可以让 `/api/robot_state` 返回同样格式。`joints` 里的单位是 URDF 单位：伸缩关节是米，旋转关节是弧度。前端会按 joint 名称驱动 URDF 模型变形。
+
+也兼容 ROS `JointState` 风格：
+
+```json
+{
+  "joint_states": {
+    "name": ["LZ_mt_Joint", "LZ_it_Joint"],
+    "position": [0.21, 0.21]
+  }
+}
+```
 
 ## 当前模型
 

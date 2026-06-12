@@ -45,7 +45,9 @@ const dom = {
   jsonInput: document.querySelector("#jsonInput"),
   metricLabel: document.querySelector("#metricLabel"),
   metricForward: document.querySelector("#metricForward"),
+  metricVertical: document.querySelector("#metricVertical"),
   metricNear: document.querySelector("#metricNear"),
+  metricTurn: document.querySelector("#metricTurn"),
   metricYaw: document.querySelector("#metricYaw"),
   metricColumn: document.querySelector("#metricColumn"),
   metricState: document.querySelector("#metricState"),
@@ -299,12 +301,17 @@ function renderPose(pose) {
 }
 
 function updateMetrics(pose) {
+  const vizMetrics = pose.g1d_visualization?.metrics || {};
   dom.metricLabel.textContent = getPoseLabel(pose);
-  const centerForward = pose.robot_alignment?.target?.ground_forward_mm;
-  const nearForward = pose.near_edge_robot_alignment?.target?.ground_forward_mm;
-  const yaw = pose.robot_alignment?.control_hint?.box_parallel_yaw_deg;
+  const centerForward = vizMetrics.center_ground_forward_mm ?? pose.robot_alignment?.target?.ground_forward_mm;
+  const centerVertical = vizMetrics.center_vertical_down_mm ?? pose.robot_alignment?.target?.vertical_down_mm;
+  const nearForward = vizMetrics.near_edge_ground_forward_mm ?? pose.near_edge_robot_alignment?.target?.ground_forward_mm;
+  const turn = vizMetrics.turn_to_target_yaw_deg ?? pose.robot_alignment?.control_hint?.turn_first_yaw_deg;
+  const yaw = vizMetrics.box_long_axis_yaw_deg ?? pose.robot_alignment?.control_hint?.box_parallel_yaw_deg;
   dom.metricForward.textContent = formatMm(centerForward);
+  dom.metricVertical.textContent = formatMm(centerVertical);
   dom.metricNear.textContent = formatMm(nearForward);
+  dom.metricTurn.textContent = formatDeg(turn);
   dom.metricYaw.textContent = yaw == null ? "-" : `${Number(yaw).toFixed(1)}°`;
   dom.metricColumn.textContent = `${Math.round(getColumnExtensionM() * 1000)} mm`;
   dom.metricState.textContent = currentRobotState?.source || "default";
@@ -312,7 +319,7 @@ function updateMetrics(pose) {
 
 function applyRobotState(state) {
   currentRobotState = state || {};
-  const joints = currentRobotState.joints && typeof currentRobotState.joints === "object" ? currentRobotState.joints : {};
+  const joints = normalizeJointState(currentRobotState);
   if (currentRobotState.column_extension_mm != null) {
     dom.columnExtensionMm.value = String(Math.round(Number(currentRobotState.column_extension_mm)));
   }
@@ -332,6 +339,23 @@ function applyRobotState(state) {
   window.__g1dVisualizerState.robotStateSource = currentRobotState.source || "unknown";
   window.__g1dVisualizerState.robotStateUpdatedAt = currentRobotState.updated_at || null;
   writeSceneState();
+}
+
+function normalizeJointState(state) {
+  if (state.joints && typeof state.joints === "object") {
+    return state.joints;
+  }
+  const jointStates = state.joint_states;
+  const names = jointStates?.name;
+  const positions = jointStates?.position;
+  if (!Array.isArray(names) || !Array.isArray(positions)) {
+    return {};
+  }
+  const joints = {};
+  for (let index = 0; index < Math.min(names.length, positions.length); index += 1) {
+    joints[String(names[index])] = Number(positions[index]);
+  }
+  return joints;
 }
 
 function applyJointState(joints) {
@@ -876,7 +900,8 @@ function getBoxYawRobotRad(pose) {
   if (axisYawRightDeg != null) {
     return THREE.MathUtils.degToRad(-Number(axisYawRightDeg));
   }
-  const commandYawDeg = pose.robot_alignment?.control_hint?.box_parallel_yaw_deg;
+  const commandYawDeg = pose.g1d_visualization?.metrics?.box_long_axis_yaw_deg
+    ?? pose.robot_alignment?.control_hint?.box_parallel_yaw_deg;
   if (commandYawDeg != null) {
     return THREE.MathUtils.degToRad(Number(commandYawDeg));
   }
@@ -979,6 +1004,10 @@ function setStatus(text) {
 
 function formatMm(value) {
   return value == null ? "-" : `${Number(value).toFixed(1)} mm`;
+}
+
+function formatDeg(value) {
+  return value == null ? "-" : `${Number(value).toFixed(1)}°`;
 }
 
 function clamp(value, min, max) {
