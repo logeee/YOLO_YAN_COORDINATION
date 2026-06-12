@@ -368,7 +368,7 @@ def _g1d_visualization_data(result: dict[str, Any]) -> dict[str, Any]:
         },
         "camera": {
             "frame": "left_camera_optical",
-            "mount_parent_link": "head_link",
+            "mount_parent_link": "torso_link",
             "camera_to_vertical_deg": alignment.get("camera_to_vertical_deg")
             or result.get("top_plane_camera_to_vertical_deg"),
             "basis": alignment.get("basis"),

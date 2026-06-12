@@ -11,7 +11,8 @@ const CIGARETTE_SIZES_M = {
 const DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4;
 const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
 const DEFAULT_COLUMN_EXTENSION_MM = 420;
-const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.074, 0.04, 0.495);
+const DEFAULT_CAMERA_PARENT_LINK = "torso_link";
+const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.0576235, 0.01753, 0.42987);
 
 window.__g1dVisualizerError = null;
 window.__g1dVisualizerState = {};
@@ -809,9 +810,9 @@ function getCameraMount() {
 }
 
 function getCameraFrame(pose = null) {
-  const headTransform = getLinkWorldTransform("head_link");
-  const parentPosition = headTransform?.position || new THREE.Vector3();
-  const parentQuaternion = headTransform?.quaternion || new THREE.Quaternion();
+  const parentTransform = getLinkWorldTransform(DEFAULT_CAMERA_PARENT_LINK);
+  const parentPosition = parentTransform?.position || new THREE.Vector3();
+  const parentQuaternion = parentTransform?.quaternion || new THREE.Quaternion();
   const localOffset = new THREE.Vector3(
     numberOrDefault(dom.cameraX.value, DEFAULT_CAMERA_OFFSET_M.x),
     numberOrDefault(dom.cameraY.value, DEFAULT_CAMERA_OFFSET_M.y),
@@ -1064,7 +1065,7 @@ function writeSceneState() {
     columnJointValuesMm: window.__g1dVisualizerState.columnJointValuesMm || {},
     cameraMountM: vectorToArray(getCameraMount()),
     cameraLocalOffsetM: vectorToArray(getCameraFrame(currentPose).localOffset),
-    cameraParentLink: "head_link",
+    cameraParentLink: DEFAULT_CAMERA_PARENT_LINK,
     cameraOpticalAngleDeg: DEFAULT_CAMERA_TO_VERTICAL_DEG,
     robotStateSource: window.__g1dVisualizerState.robotStateSource || null,
     robotStateUpdatedAt: window.__g1dVisualizerState.robotStateUpdatedAt || null,

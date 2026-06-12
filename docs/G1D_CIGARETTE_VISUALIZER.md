@@ -78,15 +78,15 @@ YOLO `/xyz` 里会返回一个精简对象：
 | `g1d_visualization.metrics.near_edge_ground_forward_mm` | YOLO/PnP | 近端边中点的地面前向距离，底盘距离微调优先用这个 |
 | `g1d_visualization.box.center_xyz_mm` | YOLO/PnP | 烟盒中心点，left camera optical 坐标 |
 | `g1d_visualization.box.near_edge_midpoint_xyz_mm` | YOLO/PnP | 靠近机器人那条边的中点 |
-| `g1d_visualization.camera.mount_parent_link` | 固定配置 | left camera 挂在 `head_link` |
+| `g1d_visualization.camera.mount_parent_link` | 固定配置 | left camera 挂在 `torso_link` |
 | `g1d_visualization.camera.camera_to_vertical_deg` | 固定配置 | left camera 光轴与地面垂直方向夹角，当前 42.4° |
 
 ## 相机
 
-左目相机默认绑定到 URDF 的 `head_link`，再叠加页面里的头部局部相机偏移：
+左目相机默认使用官方 G1 URDF 里的 `d435_joint` 挂点，绑定到 `torso_link`，再叠加页面里的相机局部偏移：
 
 ```text
-camera_world = head_link_world * camera_offset_in_head_link
+camera_world = torso_link_world * camera_offset_in_torso_link
 ```
 
 页面会画出左目 optical 坐标轴：
@@ -99,9 +99,19 @@ camera_world = head_link_world * camera_offset_in_head_link
 
 光轴 `camera +Z` 使用之前确认过的安装角 `42.4°`，相对地面垂直方向向前下方倾斜。
 
-注意：相机偏移和 optical 坐标轴现在都会跟随 `head_link` 的 world transform。也就是说立柱、腰部和头部父链变化后，left camera 会跟着机器人模型一起移动和旋转。
+注意：相机偏移和 optical 坐标轴现在都会跟随 `torso_link` 的 world transform。也就是说立柱、腰部和上身父链变化后，left camera 会跟着机器人模型一起移动和旋转。
 
-当前 URDF 里没有独立 camera link。默认挂点根据 `head_link.STL` 的前脸几何估计为 `head_link` 局部坐标 `[0.074, 0.04, 0.495]m`，对应头部左目镜附近。`head_link` 的 joint origin 本身在头部下方，不是镜头位置。
+当前使用 `unitreerobotics/unitree_ros` 的 `robots/g1_with_brainco_hand/g1_29dof_mode_15_brainco_hand.urdf`：
+
+```xml
+<joint name="d435_joint" type="fixed">
+  <origin xyz="0.0576235 0.01753 0.42987" rpy="0 0.8307767239493009 0"/>
+  <parent link="torso_link"/>
+  <child link="d435_link"/>
+</joint>
+```
+
+G1 URDF 只给了整体 `d435_link`，没有单独给 left/right imager link；页面当前用这个官方 d435 挂点作为 left camera 的可视化基准点。
 
 ## 机器人状态
 
@@ -179,7 +189,7 @@ hispeed_state.y -> LZ_mt_Joint + LZ_it_Joint
   - `LZ_mt_Joint`: `0 ~ 210mm`
   - `LZ_it_Joint`: `0 ~ 210mm`
   - 页面默认总展开量 `420mm`，也就是两节都展开到上限。
-- 左目相机在 URDF 里没有独立 link，页面提供相机挂载点 `X/Y/Z` 手动微调。
+- G1 URDF 里有 `d435_joint`，页面默认使用 `torso_link` 局部坐标 `[0.0576235, 0.01753, 0.42987]m`。G1 URDF 没有单独 left/right imager link，页面仍保留 `X/Y/Z` 输入用于现场微调。
 - 烟盒上表面尺寸来自 `/xyz` 的 `object_top_size_mm`，没有时使用默认值：
   - `XiongMao`: `161mm x 95mm`
   - `Xizi_Liqun`: `280mm x 89mm`
