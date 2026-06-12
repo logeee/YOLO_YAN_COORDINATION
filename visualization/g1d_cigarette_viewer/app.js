@@ -245,7 +245,8 @@ function renderPose(pose) {
     return;
   }
 
-  const cameraMount = getCameraMount();
+  const cameraFrame = getCameraFrame(pose);
+  const cameraMount = cameraFrame.origin;
   const centerRobot = opticalPointToRobot(center, pose).add(cameraMount);
   const dims = getBoxDimensions(pose);
   const yaw = getBoxYawRobotRad(pose);
@@ -793,33 +794,67 @@ function addRobotAxes(group, length) {
 
 function updateCameraMarker() {
   cameraMarkerGroup.clear();
-  const mount = getCameraMount();
+  const frame = getCameraFrame(currentPose);
+  const mount = frame.origin;
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.035, 0.035), materials.camera);
   body.position.copy(mount);
+  body.quaternion.copy(frame.parentQuaternion);
   cameraMarkerGroup.add(body);
   addLabel(cameraMarkerGroup, "left camera", mount.clone().add(new THREE.Vector3(0.02, 0.02, 0.055)), "#9be2ff");
-  addCameraOpticalAxes(cameraMarkerGroup, mount, DEFAULT_CAMERA_TO_VERTICAL_DEG);
+  addCameraOpticalAxes(cameraMarkerGroup, frame);
 }
 
 function getCameraMount() {
-  const head = getLinkWorldPosition("head_link") || new THREE.Vector3();
-  const offset = new THREE.Vector3(
+  return getCameraFrame(currentPose).origin;
+}
+
+function getCameraFrame(pose = null) {
+  const headTransform = getLinkWorldTransform("head_link");
+  const parentPosition = headTransform?.position || new THREE.Vector3();
+  const parentQuaternion = headTransform?.quaternion || new THREE.Quaternion();
+  const localOffset = new THREE.Vector3(
     Number(dom.cameraX.value || 0),
     Number(dom.cameraY.value || 0),
     Number(dom.cameraZ.value || 0),
   );
-  return head.add(offset);
+  const origin = parentPosition.clone().add(localOffset.clone().applyQuaternion(parentQuaternion));
+  const cameraToVerticalDeg = Number(
+    pose?.g1d_visualization?.camera?.camera_to_vertical_deg
+      ?? pose?.top_plane_camera_to_vertical_deg
+      ?? DEFAULT_CAMERA_TO_VERTICAL_DEG,
+  );
+  const localAxes = cameraOpticalAxesInHeadLocal(cameraToVerticalDeg);
+  return {
+    origin,
+    parentPosition,
+    parentQuaternion,
+    localOffset,
+    axes: {
+      xRight: localAxes.xRight.clone().applyQuaternion(parentQuaternion).normalize(),
+      yDown: localAxes.yDown.clone().applyQuaternion(parentQuaternion).normalize(),
+      zForward: localAxes.zForward.clone().applyQuaternion(parentQuaternion).normalize(),
+    },
+  };
 }
 
 function getLinkWorldPosition(linkName) {
+  const transform = getLinkWorldTransform(linkName);
+  return transform?.position || null;
+}
+
+function getLinkWorldTransform(linkName) {
   const group = urdfLinkGroups.get(linkName);
   if (!group) return null;
   robotGroup.updateMatrixWorld(true);
-  return group.getWorldPosition(new THREE.Vector3());
+  return {
+    position: group.getWorldPosition(new THREE.Vector3()),
+    quaternion: group.getWorldQuaternion(new THREE.Quaternion()),
+  };
 }
 
-function addCameraOpticalAxes(group, origin, cameraToVerticalDeg) {
-  const axes = cameraOpticalAxesInRobot(cameraToVerticalDeg);
+function addCameraOpticalAxes(group, frame) {
+  const origin = frame.origin;
+  const axes = frame.axes;
   group.add(new THREE.ArrowHelper(axes.xRight, origin, 0.16, 0xff5a5f, 0.035, 0.02));
   group.add(new THREE.ArrowHelper(axes.yDown, origin, 0.16, 0x35d477, 0.035, 0.02));
   group.add(new THREE.ArrowHelper(axes.zForward, origin, 0.22, 0x4f8cff, 0.045, 0.025));
@@ -828,7 +863,7 @@ function addCameraOpticalAxes(group, origin, cameraToVerticalDeg) {
   addLabel(group, "cam Z 42.4°", origin.clone().add(axes.zForward.clone().multiplyScalar(0.25)), "#72a3ff");
 }
 
-function cameraOpticalAxesInRobot(cameraToVerticalDeg) {
+function cameraOpticalAxesInHeadLocal(cameraToVerticalDeg) {
   const theta = THREE.MathUtils.degToRad(Number(cameraToVerticalDeg || DEFAULT_CAMERA_TO_VERTICAL_DEG));
   return {
     xRight: new THREE.Vector3(0, -1, 0),
@@ -843,36 +878,18 @@ function getPoint(value) {
 }
 
 function opticalPointToRobot(pointMm, pose) {
-  const basis = getOpticalBasis(pose);
-  const right = dot(pointMm, basis.xRight);
-  const forward = dot(pointMm, basis.groundForward);
-  const verticalDown = dot(pointMm, basis.verticalDown);
-  return new THREE.Vector3(forward / 1000, -right / 1000, -verticalDown / 1000);
+  const axes = getCameraFrame(pose).axes;
+  return axes.xRight.clone().multiplyScalar(pointMm.x / 1000)
+    .add(axes.yDown.clone().multiplyScalar(pointMm.y / 1000))
+    .add(axes.zForward.clone().multiplyScalar(pointMm.z / 1000));
 }
 
 function opticalVectorToRobot(vector, pose) {
-  const basis = getOpticalBasis(pose);
-  const right = dot(vector, basis.xRight);
-  const forward = dot(vector, basis.groundForward);
-  const verticalDown = dot(vector, basis.verticalDown);
-  return new THREE.Vector3(forward, -right, -verticalDown).normalize();
-}
-
-function getOpticalBasis(pose) {
-  const basis = pose.robot_alignment?.basis;
-  if (basis?.x_right_unit_xyz && basis?.ground_forward_unit_xyz && basis?.vertical_down_unit_xyz) {
-    return {
-      xRight: new THREE.Vector3(...basis.x_right_unit_xyz),
-      groundForward: new THREE.Vector3(...basis.ground_forward_unit_xyz),
-      verticalDown: new THREE.Vector3(...basis.vertical_down_unit_xyz),
-    };
-  }
-  const theta = THREE.MathUtils.degToRad(Number(pose.top_plane_camera_to_vertical_deg || DEFAULT_CAMERA_TO_VERTICAL_DEG));
-  return {
-    xRight: new THREE.Vector3(1, 0, 0),
-    groundForward: new THREE.Vector3(0, -Math.cos(theta), Math.sin(theta)),
-    verticalDown: new THREE.Vector3(0, Math.sin(theta), Math.cos(theta)),
-  };
+  const axes = getCameraFrame(pose).axes;
+  return axes.xRight.clone().multiplyScalar(vector.x)
+    .add(axes.yDown.clone().multiplyScalar(vector.y))
+    .add(axes.zForward.clone().multiplyScalar(vector.z))
+    .normalize();
 }
 
 function getBoxDimensions(pose) {
@@ -1046,6 +1063,7 @@ function writeSceneState() {
     columnExtensionMm: window.__g1dVisualizerState.columnExtensionMm || 0,
     columnJointValuesMm: window.__g1dVisualizerState.columnJointValuesMm || {},
     cameraMountM: vectorToArray(getCameraMount()),
+    cameraLocalOffsetM: vectorToArray(getCameraFrame(currentPose).localOffset),
     cameraParentLink: "head_link",
     cameraOpticalAngleDeg: DEFAULT_CAMERA_TO_VERTICAL_DEG,
     robotStateSource: window.__g1dVisualizerState.robotStateSource || null,

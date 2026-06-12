@@ -83,10 +83,10 @@ YOLO `/xyz` 里会返回一个精简对象：
 
 ## 相机
 
-左目相机默认绑定到 URDF 的 `head_link`，再叠加页面里的相机偏移：
+左目相机默认绑定到 URDF 的 `head_link`，再叠加页面里的头部局部相机偏移：
 
 ```text
-camera = head_link + camera_offset
+camera_world = head_link_world * camera_offset_in_head_link
 ```
 
 页面会画出左目 optical 坐标轴：
@@ -98,6 +98,8 @@ camera = head_link + camera_offset
 ```
 
 光轴 `camera +Z` 使用之前确认过的安装角 `42.4°`，相对地面垂直方向向前下方倾斜。
+
+注意：相机偏移和 optical 坐标轴现在都会跟随 `head_link` 的 world transform。也就是说立柱、腰部和头部父链变化后，left camera 会跟着机器人模型一起移动和旋转。
 
 ## 机器人状态
 
