@@ -46,49 +46,24 @@
             <span>厚度 mm</span>
             <input id="thicknessMm" type="number" min="5" max="80" step="1" value="20" />
           </label>
-          <label class="field">
-            <span>立柱展开 mm</span>
-            <input id="columnExtensionMm" type="number" min="0" max="420" step="10" value="420" />
-          </label>
         </div>
 
-        <div class="inline-fields">
-          <label class="field">
-            <span>torso局部 X m</span>
-            <input id="cameraX" type="number" step="0.001" value="0.0576235" />
-          </label>
-          <label class="field">
-            <span>torso局部 Y m</span>
-            <input id="cameraY" type="number" step="0.001" value="0.01753" />
-          </label>
-          <label class="field">
-            <span>torso局部 Z m</span>
-            <input id="cameraZ" type="number" step="0.001" value="0.42987" />
-          </label>
-        </div>
+        <input id="columnExtensionMm" type="hidden" value="420" />
+        <input id="cameraX" type="hidden" value="0.0576235" />
+        <input id="cameraY" type="hidden" value="0.01753" />
+        <input id="cameraZ" type="hidden" value="0.42987" />
 
         <div class="button-row">
-          <button id="fetchBtn" type="button">读取 /xyz</button>
+          <button id="fetchBtn" class="primary-action" type="button">刷新数据</button>
           <button id="sampleBtn" type="button">示例</button>
           <button id="applyBtn" type="button">应用 JSON</button>
         </div>
 
-        <div class="button-row">
-          <button id="stateBtn" type="button">读取状态</button>
-          <label class="toggle-field">
-            <input id="autoYolo" type="checkbox" checked />
-            <span>自动 YOLO</span>
-          </label>
-          <label class="field compact-field">
-            <span>刷新 s</span>
-            <input id="refreshSec" type="number" min="0.5" max="10" step="0.5" value="1.5" />
-          </label>
-        </div>
-
-        <div class="button-row">
+        <div class="button-row view-row">
           <button id="normalViewBtn" type="button">正常</button>
           <button id="topViewBtn" type="button">俯视</button>
           <button id="sideViewBtn" type="button">侧视</button>
+          <button id="cameraViewBtn" type="button">左目</button>
         </div>
 
         <textarea id="jsonInput" spellcheck="false"></textarea>
@@ -119,10 +94,6 @@
             <dd id="metricYaw">-</dd>
           </div>
           <div>
-            <dt>立柱展开</dt>
-            <dd id="metricColumn">-</dd>
-          </div>
-          <div>
             <dt>状态来源</dt>
             <dd id="metricState">-</dd>
           </div>
@@ -141,6 +112,6 @@
         </div>
       </section>
     </main>
-    <script type="module" src="./app.js?v=20260612_g1_d435_47_6deg_nocache"></script>
+    <script type="module" src="./app.js?v=20260612_g1d_viewer_compact_camera_view"></script>
   </body>
 </html>

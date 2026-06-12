@@ -35,14 +35,12 @@ const dom = {
   cameraY: document.querySelector("#cameraY"),
   cameraZ: document.querySelector("#cameraZ"),
   fetchBtn: document.querySelector("#fetchBtn"),
-  stateBtn: document.querySelector("#stateBtn"),
-  autoYolo: document.querySelector("#autoYolo"),
-  refreshSec: document.querySelector("#refreshSec"),
   sampleBtn: document.querySelector("#sampleBtn"),
   applyBtn: document.querySelector("#applyBtn"),
   normalViewBtn: document.querySelector("#normalViewBtn"),
   topViewBtn: document.querySelector("#topViewBtn"),
   sideViewBtn: document.querySelector("#sideViewBtn"),
+  cameraViewBtn: document.querySelector("#cameraViewBtn"),
   jsonInput: document.querySelector("#jsonInput"),
   metricLabel: document.querySelector("#metricLabel"),
   metricForward: document.querySelector("#metricForward"),
@@ -50,7 +48,6 @@ const dom = {
   metricNear: document.querySelector("#metricNear"),
   metricTurn: document.querySelector("#metricTurn"),
   metricYaw: document.querySelector("#metricYaw"),
-  metricColumn: document.querySelector("#metricColumn"),
   metricState: document.querySelector("#metricState"),
   sceneState: document.querySelector("#sceneState"),
 };
@@ -72,7 +69,7 @@ const stlLoader = new STLLoader();
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0.28, 0.0, 0.24);
-controls.enableDamping = true;
+controls.enableDamping = false;
 controls.enableRotate = true;
 controls.minDistance = 0.45;
 controls.maxDistance = 5.0;
@@ -114,34 +111,25 @@ let currentView = "normal";
 let lastFocus = new THREE.Vector3(0.24, 0.0, 0.0);
 let urdfJointControls = new Map();
 let urdfLinkGroups = new Map();
-let autoFetchTimer = null;
 
 init();
 
 async function init() {
   bindEvents();
   await loadRobot();
-  await fetchRobotState({ silent: true });
-  await fetchPose({ fallbackToSample: true });
-  setupAutoRefresh();
+  await refreshSceneData({ fallbackToSample: true, silent: true });
   animate();
 }
 
 function bindEvents() {
-  dom.fetchBtn.addEventListener("click", () => fetchPose({ fallbackToSample: false }));
-  dom.stateBtn.addEventListener("click", () => fetchRobotState({ silent: false }));
-  dom.autoYolo.addEventListener("change", setupAutoRefresh);
-  dom.refreshSec.addEventListener("input", setupAutoRefresh);
+  dom.fetchBtn.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
   dom.sampleBtn.addEventListener("click", loadSample);
   dom.applyBtn.addEventListener("click", applyJsonFromInput);
   dom.normalViewBtn.addEventListener("click", () => setView("normal"));
   dom.topViewBtn.addEventListener("click", () => setView("top"));
   dom.sideViewBtn.addEventListener("click", () => setView("side"));
-  dom.columnExtensionMm.addEventListener("input", () => {
-    applyColumnExtension();
-    if (currentPose) renderPose(currentPose);
-  });
-  for (const input of [dom.thicknessMm, dom.cameraX, dom.cameraY, dom.cameraZ]) {
+  dom.cameraViewBtn.addEventListener("click", () => setView("camera"));
+  for (const input of [dom.thicknessMm]) {
     input.addEventListener("input", () => {
       updateCameraMarker();
       if (currentPose) renderPose(currentPose);
@@ -153,18 +141,20 @@ function bindEvents() {
   resize();
 }
 
-function setupAutoRefresh() {
-  if (autoFetchTimer) {
-    window.clearInterval(autoFetchTimer);
-    autoFetchTimer = null;
+async function refreshSceneData({ fallbackToSample = false, silent = false } = {}) {
+  if (!silent) setStatus("读取数据");
+  const [stateResult, poseResult] = await Promise.allSettled([
+    fetchRobotState({ silent: true }),
+    fetchPose({ fallbackToSample, silent: true }),
+  ]);
+  const failures = [stateResult, poseResult].filter((result) => result.status === "rejected");
+  if (failures.length) {
+    const message = failures.map((result) => result.reason?.message || String(result.reason)).join("；");
+    if (!silent) setStatus(`读取失败：${message}`);
+    return false;
   }
-  if (!dom.autoYolo.checked) return;
-  const intervalMs = Math.max(500, Number(dom.refreshSec.value || 1.5) * 1000);
-  autoFetchTimer = window.setInterval(() => {
-    fetchRobotState({ silent: true }).finally(() => {
-      fetchPose({ fallbackToSample: false, silent: true });
-    });
-  }, intervalMs);
+  if (!silent) setStatus("数据已更新");
+  return true;
 }
 
 async function loadRobot() {
@@ -193,13 +183,17 @@ async function fetchPose({ fallbackToSample = false, silent = false } = {}) {
       throw new Error(payload.error || "读取失败");
     }
     applyPose(payload.pose, "YOLO 已更新");
+    return true;
   } catch (error) {
     if (fallbackToSample) {
       await loadSample();
       setStatus(`YOLO 失败，已加载示例：${error.message}`);
-    } else if (!silent) {
+      return true;
+    }
+    if (!silent) {
       setStatus(`YOLO 失败：${error.message}`);
     }
+    throw error;
   }
 }
 
@@ -214,8 +208,10 @@ async function fetchRobotState({ silent = false } = {}) {
     }
     applyRobotState(payload.state || payload);
     if (!silent) setStatus("机器人状态已更新");
+    return true;
   } catch (error) {
     if (!silent) setStatus(`状态失败：${error.message}`);
+    throw error;
   }
 }
 
@@ -315,7 +311,6 @@ function updateMetrics(pose) {
   dom.metricNear.textContent = formatMm(nearForward);
   dom.metricTurn.textContent = formatDeg(turn);
   dom.metricYaw.textContent = yaw == null ? "-" : `${Number(yaw).toFixed(1)}°`;
-  dom.metricColumn.textContent = `${Math.round(getColumnExtensionM() * 1000)} mm`;
   dom.metricState.textContent = currentRobotState?.source || "default";
 }
 
@@ -983,6 +978,12 @@ function setView(mode, immediate = true) {
     camera.position.set(focus.x, focus.y, Math.max(1.55, spread * 1.45));
     controls.target.copy(focus);
     controls.enableRotate = false;
+  } else if (mode === "camera") {
+    const frame = getCameraFrame(currentPose);
+    camera.up.copy(frame.axes.yDown).multiplyScalar(-1);
+    camera.position.copy(frame.origin);
+    controls.target.copy(frame.origin.clone().add(frame.axes.zForward));
+    controls.enableRotate = true;
   } else if (mode === "side") {
     camera.up.set(0, 0, 1);
     camera.position.set(focus.x - spread * 1.25, focus.y - 0.06, 0.72);
@@ -997,7 +998,7 @@ function setView(mode, immediate = true) {
   camera.lookAt(controls.target);
   controls.update();
   if (immediate) {
-    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "正常地面视角");
+    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : mode === "camera" ? "左目视角" : "正常地面视角");
   }
 }
 

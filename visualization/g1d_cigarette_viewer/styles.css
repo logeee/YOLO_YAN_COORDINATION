@@ -109,6 +109,10 @@ textarea:focus {
   gap: 10px;
 }
 
+.view-row {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 button {
   height: 38px;
   border: 1px solid #4b5c68;
@@ -120,6 +124,15 @@ button {
 
 button:hover {
   background: #31434f;
+}
+
+.primary-action {
+  border-color: #6ebadd;
+  background: #2c5365;
+}
+
+.primary-action:hover {
+  background: #34677d;
 }
 
 button:active {
