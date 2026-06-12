@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
 
 const CIGARETTE_SIZES_M = {
   XiongMao: { long: 0.161, short: 0.095, thickness: 0.02 },
@@ -30,6 +31,9 @@ const dom = {
   fetchBtn: document.querySelector("#fetchBtn"),
   sampleBtn: document.querySelector("#sampleBtn"),
   applyBtn: document.querySelector("#applyBtn"),
+  topViewBtn: document.querySelector("#topViewBtn"),
+  angledViewBtn: document.querySelector("#angledViewBtn"),
+  sideViewBtn: document.querySelector("#sideViewBtn"),
   jsonInput: document.querySelector("#jsonInput"),
   metricLabel: document.querySelector("#metricLabel"),
   metricForward: document.querySelector("#metricForward"),
@@ -42,18 +46,21 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0c1014);
 
 const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 20);
-camera.position.set(1.45, -1.8, 1.1);
-camera.lookAt(0.22, 0.0, 0.45);
+camera.position.set(0.24, 0.0, 2.4);
+camera.up.set(1, 0, 0);
+camera.lookAt(0.24, 0.0, 0.0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 dom.viewport.appendChild(renderer.domElement);
 
+const stlLoader = new STLLoader();
+
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.2, 0.0, 0.35);
+controls.target.set(0.24, 0.0, 0.0);
 controls.enableDamping = true;
-controls.maxPolarAngle = Math.PI * 0.48;
+controls.enableRotate = false;
 
 const root = new THREE.Group();
 scene.add(root);
@@ -68,11 +75,15 @@ const materials = {
   robotDark: new THREE.MeshStandardMaterial({ color: 0x4d6574, roughness: 0.8, metalness: 0.02 }),
   joint: new THREE.MeshStandardMaterial({ color: 0xf6c85f, roughness: 0.55 }),
   rod: new THREE.MeshStandardMaterial({ color: 0x66879b, roughness: 0.65 }),
+  urdfBody: new THREE.MeshStandardMaterial({ color: 0xd4e4ef, roughness: 0.7, metalness: 0.04 }),
+  urdfBodyDark: new THREE.MeshStandardMaterial({ color: 0x41525d, roughness: 0.82, metalness: 0.05 }),
+  urdfArm: new THREE.MeshStandardMaterial({ color: 0x86aabd, roughness: 0.72, metalness: 0.03 }),
   camera: new THREE.MeshStandardMaterial({ color: 0x64b6d9, roughness: 0.45 }),
   box: new THREE.MeshStandardMaterial({ color: 0xd8aa39, roughness: 0.58 }),
   boxTop: new THREE.MeshStandardMaterial({ color: 0x28323b, roughness: 0.85 }),
   line: new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.62 }),
 };
+const urdfMaterialCache = new Map();
 
 scene.add(new THREE.HemisphereLight(0xe8f7ff, 0x2b3440, 1.7));
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -83,6 +94,8 @@ addGround();
 addRobotAxes(root, 0.38);
 
 let currentPose = null;
+let currentView = "top";
+let lastFocus = new THREE.Vector3(0.24, 0.0, 0.0);
 
 init();
 
@@ -97,6 +110,9 @@ function bindEvents() {
   dom.fetchBtn.addEventListener("click", fetchPose);
   dom.sampleBtn.addEventListener("click", loadSample);
   dom.applyBtn.addEventListener("click", applyJsonFromInput);
+  dom.topViewBtn.addEventListener("click", () => setView("top"));
+  dom.angledViewBtn.addEventListener("click", () => setView("angled"));
+  dom.sideViewBtn.addEventListener("click", () => setView("side"));
   for (const input of [dom.thicknessMm, dom.cameraX, dom.cameraY, dom.cameraZ]) {
     input.addEventListener("input", () => {
       updateCameraMarker();
@@ -113,7 +129,7 @@ async function loadRobot() {
   setStatus("读取 URDF");
   const text = await fetch("./g1_d.urdf").then((res) => res.text());
   const stats = buildUrdfSkeleton(text, robotGroup);
-  setStatus(`URDF ${stats.links} links，代理模型`);
+  setStatus(`URDF ${stats.links} links，${stats.meshVisuals} 个 STL visual`);
   updateCameraMarker();
 }
 
@@ -237,6 +253,7 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
   const xml = new DOMParser().parseFromString(urdfText, "application/xml");
   const links = [...xml.querySelectorAll("link")].map((node) => node.getAttribute("name")).filter(Boolean);
   const joints = [...xml.querySelectorAll("joint")].map(parseJoint).filter((joint) => joint.parent && joint.child);
+  const visualMap = parseVisualMap(xml);
   const childLinks = new Set(joints.map((joint) => joint.child));
   const rootLink = links.find((link) => !childLinks.has(link)) || links[0];
   const byParent = new Map();
@@ -244,11 +261,14 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
     if (!byParent.has(joint.parent)) byParent.set(joint.parent, []);
     byParent.get(joint.parent).push(joint);
   }
+  const worldPositions = computeUrdfWorldPositions(rootLink, byParent);
 
   const rootLinkGroup = new THREE.Group();
   rootLinkGroup.name = rootLink;
   parentGroup.add(rootLinkGroup);
-  addLinkProxy(rootLinkGroup, rootLink);
+  if (!addUrdfVisuals(rootLinkGroup, rootLink, visualMap)) {
+    addLinkProxy(rootLinkGroup, rootLink);
+  }
 
   function visit(linkName, group) {
     const children = byParent.get(linkName) || [];
@@ -260,15 +280,191 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
       group.add(childGroup);
       addRod(group, new THREE.Vector3(), joint.xyz);
       addJointMarker(group, joint.xyz, joint.type);
-      addLinkProxy(childGroup, joint.child);
+      if (!addUrdfVisuals(childGroup, joint.child, visualMap)) {
+        addLinkProxy(childGroup, joint.child);
+      }
       visit(joint.child, childGroup);
     }
   }
 
   visit(rootLink, rootLinkGroup);
+  const urdfMeshVisuals = [...visualMap.values()].reduce((sum, visuals) => sum + visuals.length, 0);
+  if (urdfMeshVisuals === 0) {
+    addReadableG1DProxy(parentGroup, worldPositions);
+  }
   window.__g1dVisualizerState.robotObjects = countObjects(parentGroup);
+  window.__g1dVisualizerState.urdfLinks = links.length;
+  window.__g1dVisualizerState.urdfJoints = joints.length;
+  window.__g1dVisualizerState.urdfMeshVisuals = urdfMeshVisuals;
+  window.__g1dVisualizerState.urdfLoadedMeshes = 0;
+  window.__g1dVisualizerState.urdfFailedMeshes = 0;
+  window.__g1dVisualizerState.urdfProxy = urdfMeshVisuals === 0;
   writeSceneState();
-  return { links: links.length, joints: joints.length };
+  return { links: links.length, joints: joints.length, meshVisuals: urdfMeshVisuals };
+}
+
+function computeUrdfWorldPositions(rootLink, byParent) {
+  const positions = new Map([[rootLink, new THREE.Vector3()]]);
+
+  function visit(linkName) {
+    const base = positions.get(linkName) || new THREE.Vector3();
+    const children = byParent.get(linkName) || [];
+    for (const joint of children) {
+      const childPosition = base.clone().add(joint.xyz);
+      positions.set(joint.child, childPosition);
+      visit(joint.child);
+    }
+  }
+
+  visit(rootLink);
+  return positions;
+}
+
+function parseVisualMap(xml) {
+  const visualMap = new Map();
+  for (const linkNode of xml.querySelectorAll("link")) {
+    const linkName = linkNode.getAttribute("name");
+    if (!linkName) continue;
+    const visuals = [];
+    for (const visualNode of [...linkNode.children].filter((child) => child.tagName === "visual")) {
+      const meshNode = visualNode.querySelector("geometry mesh");
+      const filename = meshNode?.getAttribute("filename");
+      if (!filename) continue;
+      const origin = visualNode.querySelector("origin");
+      const scaleText = meshNode.getAttribute("scale") || "1 1 1";
+      const colorText = visualNode.querySelector("material color")?.getAttribute("rgba");
+      visuals.push({
+        filename: normalizeMeshPath(filename),
+        xyz: parseVector(origin?.getAttribute("xyz") || "0 0 0"),
+        rpy: parseVector(origin?.getAttribute("rpy") || "0 0 0"),
+        scale: parseVector(scaleText),
+        color: parseRgba(colorText),
+      });
+    }
+    if (visuals.length > 0) {
+      visualMap.set(linkName, visuals);
+    }
+  }
+  return visualMap;
+}
+
+function normalizeMeshPath(filename) {
+  const normalized = String(filename).replace(/\\/g, "/");
+  const marker = "g1_d_description/";
+  if (normalized.startsWith("package://")) {
+    const index = normalized.indexOf(marker);
+    return index >= 0 ? normalized.slice(index + marker.length) : normalized.replace("package://", "");
+  }
+  return normalized.replace(/^\.?\//, "");
+}
+
+function parseRgba(text) {
+  if (!text) return [0.78, 0.84, 0.9, 1.0];
+  const values = String(text).trim().split(/\s+/).map(Number);
+  return [
+    Number.isFinite(values[0]) ? values[0] : 0.78,
+    Number.isFinite(values[1]) ? values[1] : 0.84,
+    Number.isFinite(values[2]) ? values[2] : 0.9,
+    Number.isFinite(values[3]) ? values[3] : 1.0,
+  ];
+}
+
+function addUrdfVisuals(group, linkName, visualMap) {
+  const visuals = visualMap.get(linkName) || [];
+  if (visuals.length === 0) return false;
+  for (const visual of visuals) {
+    loadUrdfStl(group, linkName, visual);
+  }
+  return true;
+}
+
+function loadUrdfStl(group, linkName, visual) {
+  const material = materialForRgba(visual.color);
+  stlLoader.load(
+    visual.filename,
+    (geometry) => {
+      geometry.computeVertexNormals();
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.name = `${linkName}_mesh`;
+      mesh.position.copy(visual.xyz);
+      mesh.rotation.set(visual.rpy.x, visual.rpy.y, visual.rpy.z, "XYZ");
+      mesh.scale.set(visual.scale.x || 1, visual.scale.y || 1, visual.scale.z || 1);
+      group.add(mesh);
+      window.__g1dVisualizerState.urdfLoadedMeshes = (window.__g1dVisualizerState.urdfLoadedMeshes || 0) + 1;
+      window.__g1dVisualizerState.robotObjects = countObjects(robotGroup);
+      writeSceneState();
+    },
+    undefined,
+    () => {
+      addLinkProxy(group, linkName);
+      window.__g1dVisualizerState.urdfFailedMeshes = (window.__g1dVisualizerState.urdfFailedMeshes || 0) + 1;
+      window.__g1dVisualizerState.robotObjects = countObjects(robotGroup);
+      writeSceneState();
+    },
+  );
+}
+
+function materialForRgba(rgba) {
+  const key = rgba.map((value) => Number(value).toFixed(3)).join(",");
+  if (!urdfMaterialCache.has(key)) {
+    urdfMaterialCache.set(
+      key,
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(rgba[0], rgba[1], rgba[2]),
+        opacity: rgba[3],
+        transparent: rgba[3] < 0.999,
+        roughness: 0.74,
+        metalness: 0.04,
+      }),
+    );
+  }
+  return urdfMaterialCache.get(key);
+}
+
+function addReadableG1DProxy(parentGroup, worldPositions) {
+  const proxy = new THREE.Group();
+  proxy.name = "readable_urdf_proxy";
+  parentGroup.add(proxy);
+
+  addBox(proxy, new THREE.Vector3(0.0, 0.0, 0.02), [0.64, 0.50, 0.10], materials.urdfBodyDark);
+  addBox(proxy, new THREE.Vector3(0.04, 0.0, 0.095), [0.40, 0.34, 0.045], materials.urdfBody);
+
+  const leftWheel = worldPositions.get("Left_Wheel_Link") || new THREE.Vector3(0, 0.203, -0.026);
+  const rightWheel = worldPositions.get("RIght_Wheel_Link") || new THREE.Vector3(0, -0.203, -0.026);
+  addWheel(proxy, leftWheel);
+  addWheel(proxy, rightWheel);
+
+  const lzBase = worldPositions.get("LZ_ot_Link") || new THREE.Vector3(0, 0, 0.528);
+  const torso = worldPositions.get("torso_link") || new THREE.Vector3(0.055, 0, 0.733);
+  const head = worldPositions.get("head_link") || new THREE.Vector3(0.059, 0, 0.679);
+  addCylinderBetween(proxy, new THREE.Vector3(lzBase.x, lzBase.y, 0.11), torso.clone().add(new THREE.Vector3(0, 0, -0.06)), 0.035, materials.urdfBody);
+  addBox(proxy, torso.clone().add(new THREE.Vector3(0.02, 0, 0.03)), [0.24, 0.17, 0.20], materials.urdfBody);
+  addBox(proxy, head.clone().add(new THREE.Vector3(0.05, 0, 0.035)), [0.20, 0.15, 0.10], materials.urdfBody);
+
+  addArmProxy(proxy, worldPositions, "left");
+  addArmProxy(proxy, worldPositions, "right");
+  addLabel(proxy, "G1-D URDF", new THREE.Vector3(-0.18, -0.28, 0.16), "#d9ecf6");
+}
+
+function addArmProxy(proxy, worldPositions, side) {
+  const prefix = `${side}_`;
+  const points = [
+    worldPositions.get(`${prefix}shoulder_pitch_link`),
+    worldPositions.get(`${prefix}shoulder_roll_link`),
+    worldPositions.get(`${prefix}shoulder_yaw_link`),
+    worldPositions.get(`${prefix}elbow_link`),
+    worldPositions.get(`${prefix}wrist_roll_link`),
+    worldPositions.get(`${prefix}wrist_pitch_link`),
+    worldPositions.get(`${prefix}wrist_yaw_link`),
+  ].filter(Boolean);
+  for (let index = 0; index < points.length - 1; index += 1) {
+    addCylinderBetween(proxy, points[index], points[index + 1], 0.018, materials.urdfArm);
+  }
+  for (const point of points) {
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.028, 18, 12), materials.joint);
+    marker.position.copy(point);
+    proxy.add(marker);
+  }
 }
 
 function parseJoint(node) {
@@ -335,6 +531,40 @@ function addJointMarker(group, position, type) {
   const marker = new THREE.Mesh(new THREE.SphereGeometry(radius, 14, 10), materials.joint);
   marker.position.copy(position);
   group.add(marker);
+}
+
+function addBox(group, position, size, material) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(size[0], size[1], size[2]), material);
+  mesh.position.copy(position);
+  group.add(mesh);
+  const edge = new THREE.LineSegments(
+    new THREE.EdgesGeometry(mesh.geometry),
+    new THREE.LineBasicMaterial({ color: 0xe7f5fb, transparent: true, opacity: 0.42 }),
+  );
+  edge.position.copy(position);
+  group.add(edge);
+  return mesh;
+}
+
+function addWheel(group, position) {
+  const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.078, 0.078, 0.056, 32), materials.urdfBodyDark);
+  wheel.position.copy(position);
+  wheel.rotation.x = Math.PI / 2;
+  group.add(wheel);
+  return wheel;
+}
+
+function addCylinderBetween(group, start, end, radius, material) {
+  const length = start.distanceTo(end);
+  if (length < 0.006) return null;
+  const geometry = new THREE.CylinderGeometry(radius, radius, length, 16);
+  const mesh = new THREE.Mesh(geometry, material);
+  const mid = start.clone().lerp(end, 0.5);
+  const direction = end.clone().sub(start).normalize();
+  mesh.position.copy(mid);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+  group.add(mesh);
+  return mesh;
 }
 
 function addGround() {
@@ -492,7 +722,35 @@ function addLabel(group, text, position, color = "#ffffff") {
 }
 
 function frameScene(target) {
-  controls.target.lerp(target, 0.35);
+  lastFocus = new THREE.Vector3(target.x * 0.5, target.y * 0.5, 0.0);
+  setView(currentView, false);
+}
+
+function setView(mode, immediate = true) {
+  currentView = mode;
+  const focus = lastFocus.clone();
+  const distance = Math.max(1.45, Math.hypot(focus.x, focus.y) * 3.4 + 1.25);
+  if (mode === "top") {
+    camera.up.set(1, 0, 0);
+    camera.position.set(focus.x, focus.y, distance);
+    controls.target.copy(focus);
+    controls.enableRotate = false;
+  } else if (mode === "side") {
+    camera.up.set(0, 0, 1);
+    camera.position.set(focus.x - 1.55, focus.y - 0.05, 0.92);
+    controls.target.set(focus.x, focus.y, 0.30);
+    controls.enableRotate = true;
+  } else {
+    camera.up.set(0, 0, 1);
+    camera.position.set(focus.x + 1.25, focus.y - 1.25, 1.25);
+    controls.target.set(focus.x, focus.y, 0.26);
+    controls.enableRotate = true;
+  }
+  camera.lookAt(controls.target);
+  controls.update();
+  if (immediate) {
+    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "斜视");
+  }
 }
 
 function resize() {
@@ -536,6 +794,12 @@ function writeSceneState() {
   dom.sceneState.value = JSON.stringify({
     error: window.__g1dVisualizerError,
     robotObjects: window.__g1dVisualizerState.robotObjects || 0,
+    urdfLinks: window.__g1dVisualizerState.urdfLinks || 0,
+    urdfJoints: window.__g1dVisualizerState.urdfJoints || 0,
+    urdfMeshVisuals: window.__g1dVisualizerState.urdfMeshVisuals || 0,
+    urdfLoadedMeshes: window.__g1dVisualizerState.urdfLoadedMeshes || 0,
+    urdfFailedMeshes: window.__g1dVisualizerState.urdfFailedMeshes || 0,
+    urdfProxy: Boolean(window.__g1dVisualizerState.urdfProxy),
     cigaretteObjects: window.__g1dVisualizerState.cigaretteObjects || 0,
     lastCenterRobotM: window.__g1dVisualizerState.lastCenterRobotM || null,
   });

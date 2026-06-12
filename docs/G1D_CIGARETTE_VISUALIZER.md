@@ -40,13 +40,16 @@ http://192.168.60.121:18081/xyz
 
 ## 当前模型
 
-- 使用 `visualization/g1d_cigarette_viewer/g1_d.urdf` 解析 G1-D link/joint。
-- 当前没有 `meshes/*.STL`，所以页面显示 URDF 骨架和代理体，不是真实外观 mesh。
+- 使用 Unitree 官方 `g1_d_description`：
+  - `visualization/g1d_cigarette_viewer/g1_d.urdf`
+  - `visualization/g1d_cigarette_viewer/meshes/*.STL`
+- 页面会按 URDF 的 link/joint 和 `<visual><mesh>` 加载 STL。
 - 左目相机在 URDF 里没有独立 link，页面提供相机挂载点 `X/Y/Z` 手动微调。
 - 烟盒上表面尺寸来自 `/xyz` 的 `object_top_size_mm`，没有时使用默认值：
   - `XiongMao`: `161mm x 95mm`
   - `Xizi_Liqun`: `280mm x 89mm`
 - 烟盒厚度目前没有实测值，页面默认 `20mm`，可以直接改。
+- 默认视角是地面俯视，方便看机器人和烟盒在地面平面里的相对位置；页面也提供斜视和侧视按钮。
 
 ## 坐标约定
 
