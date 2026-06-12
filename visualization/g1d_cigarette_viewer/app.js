@@ -1034,13 +1034,13 @@ function setView(mode, immediate = true) {
   const frameBox = lastFrameBox || computeFrameBox();
   if (mode === "top") {
     controls.enableRotate = false;
-    fitCameraToBox(frameBox, new THREE.Vector3(0.02, 0.0, 1.0), new THREE.Vector3(1, 0, 0), 1.18);
+    fitCameraToBox(frameBox, new THREE.Vector3(0.02, 0.0, 1.0), new THREE.Vector3(1, 0, 0), 1.06);
   } else if (mode === "side") {
     controls.enableRotate = true;
-    fitCameraToBox(frameBox, new THREE.Vector3(0.02, -1.0, 0.08), new THREE.Vector3(0, 0, 1), 1.16);
+    fitCameraToBox(frameBox, new THREE.Vector3(0.02, -1.0, 0.08), new THREE.Vector3(0, 0, 1), 1.04);
   } else {
     controls.enableRotate = true;
-    fitCameraToBox(frameBox, new THREE.Vector3(1.45, -1.25, 0.72), new THREE.Vector3(0, 0, 1), 1.12);
+    fitCameraToBox(frameBox, new THREE.Vector3(1.45, -1.25, 0.72), new THREE.Vector3(0, 0, 1), 1.02);
   }
   if (immediate) {
     setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "正常地面视角");
@@ -1057,9 +1057,9 @@ function computeFrameBox() {
   }
   const size = box.getSize(new THREE.Vector3());
   const pad = new THREE.Vector3(
-    Math.max(0.08, size.x * 0.08),
-    Math.max(0.08, size.y * 0.08),
-    Math.max(0.08, size.z * 0.08),
+    Math.max(0.04, size.x * 0.05),
+    Math.max(0.04, size.y * 0.05),
+    Math.max(0.04, size.z * 0.05),
   );
   box.min.sub(pad);
   box.max.add(pad);

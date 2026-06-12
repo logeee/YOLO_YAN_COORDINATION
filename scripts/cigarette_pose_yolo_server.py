@@ -1196,11 +1196,11 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     img {{ width: 100%; max-width: 640px; height: auto; display: block; background: #f0f4f8; }}
     .wide {{ grid-column: 1 / -1; }}
     .wide img {{ max-width: 1100px; }}
-    .g1d-visualizer-card {{ width: min(540px, 100%); margin: 16px 0 18px; border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; }}
+    .g1d-visualizer-card {{ width: min(380px, 100%); margin: 16px 0 18px; border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; }}
     .g1d-visualizer-title {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }}
     .g1d-visualizer-title h2 {{ margin: 0; }}
     .g1d-visualizer-title span {{ color: #627d98; font-size: 13px; }}
-    .g1d-visualizer-frame {{ width: 100%; height: 320px; border: 0; border-radius: 6px; display: block; background: #0c1014; }}
+    .g1d-visualizer-frame {{ width: 100%; height: 560px; border: 0; border-radius: 6px; display: block; background: #0c1014; }}
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
     th, td {{ border: 1px solid #d9e2ec; padding: 5px; vertical-align: top; }}
     th {{ background: #f0f4f8; }}
@@ -1217,12 +1217,13 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
   <div class="status">{status_line}</div>
   <h2>关键数据</h2>
   {_key_summary_html(payload)}
+  <h2>图片显示</h2>
+  <div class="grid">{image_cards}</div>
   {_embedded_g1d_visualizer_html(payload)}
-  <h2>G1-D 可视化需要的数据</h2>
-  {_g1d_visualization_table(payload)}
   <h2>横竖两套假设对比</h2>
   {_alignment_hypotheses_table(payload)}
-  <div class="grid">{image_cards}</div>
+  <h2>G1-D 可视化需要的数据</h2>
+  {_g1d_visualization_table(payload)}
   <h2>当前选中的左目候选</h2>
   <pre>{selected_text}</pre>
   <h2>左目 YOLO 候选</h2>
