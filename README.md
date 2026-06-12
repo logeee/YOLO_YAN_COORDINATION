@@ -293,7 +293,7 @@ curl -s http://127.0.0.1:18081/xyz \
 ```text
 selected_orientation                              当前自动选中的横/竖物理尺寸假设
 robot_alignment.target.range_from_left_camera_mm   左目光心到上表面中心点的直线距离
-robot_alignment.target.ground_forward_mm           按相机安装角 42.4° 投影后的地面前向距离
+robot_alignment.target.ground_forward_mm           按相机安装角 47.6° 投影后的地面前向距离
 robot_alignment.target.right_mm                    目标相对左目/机器人向右的偏差
 robot_alignment.target.bearing_right_deg           目标相对正前方偏右多少度
 robot_alignment.target.cmd_vel_yaw_to_center_deg   要先朝目标转多少度，正号按 ROS angular.z 左转约定
@@ -433,3 +433,64 @@ curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 ```
 
 更多说明见 `docs/G1D_POSE_ADJUST_SERVICE.md`。
+
+## G1-D 烟盒相对位置可视化
+
+这是 G1-D 和烟盒相对位置的 3D 可视化。当前先作为独立页面测试，后续目标是嵌到 YOLO `/debug` 页面里。启动：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/g1d_cigarette_visualizer_server.sh
+```
+
+手动启动或重启：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/g1d_cigarette_visualizer_server.sh
+```
+
+开机自启动：
+
+```bash
+sudo cp systemd/g1d-cigarette-visualizer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now g1d-cigarette-visualizer.service
+```
+
+检查：
+
+```bash
+systemctl is-enabled g1d-cigarette-visualizer.service
+systemctl is-active g1d-cigarette-visualizer.service
+curl -s http://127.0.0.1:18085/health
+```
+
+打开：
+
+```text
+http://127.0.0.1:18085/
+http://<机器人IP>:18085/
+```
+
+页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认读取 YOLO `/xyz` 的 `g1d_visualization` 数据，失败时才用示例数据。左目相机使用官方 `d435_joint`，绑定到 `torso_link`，并画出 `47.6°` optical 坐标轴。机器人状态从 `/api/robot_state` 读取；机器人上默认接宇树 DDS `rt/lowstate` 和 `rt/hispeed_state`，可驱动立柱和 URDF joint。
+
+YOLO `/debug` 页面现在也会显示一块 `G1-D 可视化需要的数据`，包括 joint states 需求、朝目标转角、烟盒长轴角、中心垂直距离、中心地面前向和近端边地面前向。
+
+更多说明见 `docs/G1D_CIGARETTE_VISUALIZER.md`。
+
+# 一键开机自启脚本
+在机器人上执行：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/install_autostart_services.sh
+```
+
+它会把这三个服务复制到 /etc/systemd/system/，执行 daemon-reload，并对下面三个服务执行 enable --now：
+```text
+cigarette-pose-yolo.service
+g1d-cigarette-visualizer.service
+g1d-pose-adjust.service
+```
+这三个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。当前这台环境是 Windows 工作区，不能实际跑 systemctl 到机器人上。

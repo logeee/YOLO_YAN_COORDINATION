@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>G1-D 烟盒相对位置</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="tool-panel" aria-label="控制面板">
+        <div class="title-block">
+          <h1>G1-D / 烟盒</h1>
+          <p id="statusText">等待数据</p>
+        </div>
+
+        <label class="field">
+          <span>XYZ 地址</span>
+          <input id="sourceUrl" value="http://127.0.0.1:18081/xyz" />
+        </label>
+
+        <label class="field">
+          <span>Robot State 地址</span>
+          <input id="robotStateUrl" value="/api/robot_state" />
+        </label>
+
+        <div class="inline-fields">
+          <label class="field">
+            <span>类别</span>
+            <select id="labelSelect">
+              <option value="">自动</option>
+              <option value="XiongMao">XiongMao</option>
+              <option value="Xizi_Liqun">Xizi_Liqun</option>
+              <option value="Liqun">Liqun</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>厚度 mm</span>
+            <input id="thicknessMm" type="number" min="5" max="80" step="1" value="20" />
+          </label>
+        </div>
+
+        <input id="columnExtensionMm" type="hidden" value="420" />
+        <input id="cameraX" type="hidden" value="0.0576235" />
+        <input id="cameraY" type="hidden" value="0.01753" />
+        <input id="cameraZ" type="hidden" value="0.42987" />
+
+        <div class="button-row data-row">
+          <button id="fetchBtn" class="primary-action" type="button">刷新数据</button>
+        </div>
+
+        <div class="button-row">
+          <button id="normalViewBtn" type="button">正常</button>
+          <button id="topViewBtn" type="button">俯视</button>
+          <button id="sideViewBtn" type="button">侧视</button>
+        </div>
+
+        <dl class="metrics">
+          <div>
+            <dt>选中类别</dt>
+            <dd id="metricLabel">-</dd>
+          </div>
+          <div>
+            <dt>中心前向</dt>
+            <dd id="metricForward">-</dd>
+          </div>
+          <div>
+            <dt>中心垂直</dt>
+            <dd id="metricVertical">-</dd>
+          </div>
+          <div>
+            <dt>近端边前向</dt>
+            <dd id="metricNear">-</dd>
+          </div>
+          <div>
+            <dt>朝目标转角</dt>
+            <dd id="metricTurn">-</dd>
+          </div>
+          <div>
+            <dt>长轴角</dt>
+            <dd id="metricYaw">-</dd>
+          </div>
+          <div>
+            <dt>状态来源</dt>
+            <dd id="metricState">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="scene-panel" aria-label="3D 场景">
+        <div id="viewport"></div>
+        <output id="sceneState" hidden></output>
+        <div class="legend">
+          <span><i class="axis-x"></i>X 前</span>
+          <span><i class="axis-y"></i>Y 左</span>
+          <span><i class="axis-z"></i>Z 上</span>
+          <span><i class="robot-color"></i>G1-D</span>
+          <span><i class="box-color"></i>烟盒</span>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./app.js?v=20260612_g1d_viewer_larger_portrait_embed"></script>
+  </body>
+</html>

@@ -48,7 +48,7 @@ from cigarette_pose_alignment import compute_robot_alignment, configured_ground_
 
 
 ORIENTATIONS = ("long_x_short_y", "short_x_long_y")
-DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4
+DEFAULT_CAMERA_TO_VERTICAL_DEG = 47.6
 DEFAULT_CENTER_ABOVE_HEIGHT_MM = 100.0
 DEFAULT_BOX_HEAD_ABOVE_HEIGHT_MM = 100.0
 DEFAULT_BOX_HEAD_FRACTION_FROM_HEAD = 0.2
