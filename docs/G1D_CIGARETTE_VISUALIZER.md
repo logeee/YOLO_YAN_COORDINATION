@@ -44,6 +44,10 @@ http://192.168.60.121:18081/xyz
   - `visualization/g1d_cigarette_viewer/g1_d.urdf`
   - `visualization/g1d_cigarette_viewer/meshes/*.STL`
 - 页面会按 URDF 的 link/joint 和 `<visual><mesh>` 加载 STL。
+- 立柱使用 URDF 里的两个 prismatic 关节：
+  - `LZ_mt_Joint`: `0 ~ 210mm`
+  - `LZ_it_Joint`: `0 ~ 210mm`
+  - 页面默认总展开量 `420mm`，也就是两节都展开到上限。
 - 左目相机在 URDF 里没有独立 link，页面提供相机挂载点 `X/Y/Z` 手动微调。
 - 烟盒上表面尺寸来自 `/xyz` 的 `object_top_size_mm`，没有时使用默认值：
   - `XiongMao`: `161mm x 95mm`

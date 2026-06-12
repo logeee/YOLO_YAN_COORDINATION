@@ -450,6 +450,6 @@ http://127.0.0.1:18085/
 http://<机器人IP>:18085/
 ```
 
-页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认是正常地面视角，也可以切到俯视/侧视。烟盒厚度没有实测值，默认 `20mm`，页面里可以改。
+页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认是正常地面视角，也可以切到俯视/侧视。立柱默认按展开状态显示，展开量 `420mm`，页面里可以调。烟盒厚度没有实测值，默认 `20mm`。
 
 更多说明见 `docs/G1D_CIGARETTE_VISUALIZER.md`。

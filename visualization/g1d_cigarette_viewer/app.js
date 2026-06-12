@@ -9,6 +9,8 @@ const CIGARETTE_SIZES_M = {
 };
 
 const DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4;
+const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
+const DEFAULT_COLUMN_EXTENSION_MM = 420;
 
 window.__g1dVisualizerError = null;
 window.__g1dVisualizerState = {};
@@ -25,6 +27,7 @@ const dom = {
   sourceUrl: document.querySelector("#sourceUrl"),
   labelSelect: document.querySelector("#labelSelect"),
   thicknessMm: document.querySelector("#thicknessMm"),
+  columnExtensionMm: document.querySelector("#columnExtensionMm"),
   cameraX: document.querySelector("#cameraX"),
   cameraY: document.querySelector("#cameraY"),
   cameraZ: document.querySelector("#cameraZ"),
@@ -98,6 +101,7 @@ addRobotAxes(root, 0.38);
 let currentPose = null;
 let currentView = "normal";
 let lastFocus = new THREE.Vector3(0.24, 0.0, 0.0);
+let urdfJointControls = new Map();
 
 init();
 
@@ -115,6 +119,10 @@ function bindEvents() {
   dom.normalViewBtn.addEventListener("click", () => setView("normal"));
   dom.topViewBtn.addEventListener("click", () => setView("top"));
   dom.sideViewBtn.addEventListener("click", () => setView("side"));
+  dom.columnExtensionMm.addEventListener("input", () => {
+    applyColumnExtension();
+    if (currentPose) renderPose(currentPose);
+  });
   for (const input of [dom.thicknessMm, dom.cameraX, dom.cameraY, dom.cameraZ]) {
     input.addEventListener("input", () => {
       updateCameraMarker();
@@ -252,6 +260,7 @@ function updateMetrics(pose) {
 
 function buildUrdfSkeleton(urdfText, parentGroup) {
   parentGroup.clear();
+  urdfJointControls = new Map();
   const xml = new DOMParser().parseFromString(urdfText, "application/xml");
   const links = [...xml.querySelectorAll("link")].map((node) => node.getAttribute("name")).filter(Boolean);
   const joints = [...xml.querySelectorAll("joint")].map(parseJoint).filter((joint) => joint.parent && joint.child);
@@ -277,11 +286,18 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
     for (const joint of children) {
       const childGroup = new THREE.Group();
       childGroup.name = joint.child;
-      childGroup.position.copy(joint.xyz);
+      childGroup.position.copy(jointPosition(joint));
       childGroup.rotation.set(joint.rpy.x, joint.rpy.y, joint.rpy.z, "XYZ");
       group.add(childGroup);
-      addRod(group, new THREE.Vector3(), joint.xyz);
-      addJointMarker(group, joint.xyz, joint.type);
+      if (joint.type === "prismatic") {
+        urdfJointControls.set(joint.name, {
+          group: childGroup,
+          joint,
+          baseXYZ: joint.xyz.clone(),
+        });
+      }
+      addRod(group, new THREE.Vector3(), childGroup.position);
+      addJointMarker(group, childGroup.position, joint.type);
       if (!addUrdfVisuals(childGroup, joint.child, visualMap)) {
         addLinkProxy(childGroup, joint.child);
       }
@@ -301,6 +317,7 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
   window.__g1dVisualizerState.urdfLoadedMeshes = 0;
   window.__g1dVisualizerState.urdfFailedMeshes = 0;
   window.__g1dVisualizerState.urdfProxy = urdfMeshVisuals === 0;
+  updateColumnState();
   writeSceneState();
   return { links: links.length, joints: joints.length, meshVisuals: urdfMeshVisuals };
 }
@@ -312,7 +329,7 @@ function computeUrdfWorldPositions(rootLink, byParent) {
     const base = positions.get(linkName) || new THREE.Vector3();
     const children = byParent.get(linkName) || [];
     for (const joint of children) {
-      const childPosition = base.clone().add(joint.xyz);
+      const childPosition = base.clone().add(jointPosition(joint));
       positions.set(joint.child, childPosition);
       visit(joint.child);
     }
@@ -320,6 +337,42 @@ function computeUrdfWorldPositions(rootLink, byParent) {
 
   visit(rootLink);
   return positions;
+}
+
+function jointPosition(joint) {
+  return joint.xyz.clone().add(joint.axis.clone().multiplyScalar(jointValue(joint)));
+}
+
+function jointValue(joint) {
+  if (!COLUMN_JOINT_NAMES.includes(joint.name)) return 0;
+  const totalM = getColumnExtensionM();
+  const perJointM = totalM / COLUMN_JOINT_NAMES.length;
+  return clamp(perJointM, joint.limit.lower, joint.limit.upper);
+}
+
+function getColumnExtensionM() {
+  const rawMm = Number(dom.columnExtensionMm?.value || DEFAULT_COLUMN_EXTENSION_MM);
+  return clamp(rawMm / 1000, 0, 0.42);
+}
+
+function applyColumnExtension() {
+  for (const name of COLUMN_JOINT_NAMES) {
+    const control = urdfJointControls.get(name);
+    if (!control) continue;
+    control.group.position.copy(jointPosition(control.joint));
+  }
+  updateColumnState();
+  writeSceneState();
+}
+
+function updateColumnState() {
+  window.__g1dVisualizerState.columnExtensionMm = Math.round(getColumnExtensionM() * 1000);
+  window.__g1dVisualizerState.columnJointValuesMm = Object.fromEntries(
+    COLUMN_JOINT_NAMES.map((name) => {
+      const control = urdfJointControls.get(name);
+      return [name, control ? Math.round(jointValue(control.joint) * 1000) : null];
+    }),
+  );
 }
 
 function parseVisualMap(xml) {
@@ -471,6 +524,8 @@ function addArmProxy(proxy, worldPositions, side) {
 
 function parseJoint(node) {
   const origin = node.querySelector("origin");
+  const axisNode = node.querySelector("axis");
+  const limitNode = node.querySelector("limit");
   const xyz = parseVector(origin?.getAttribute("xyz") || "0 0 0");
   const rpy = parseVector(origin?.getAttribute("rpy") || "0 0 0");
   return {
@@ -479,6 +534,11 @@ function parseJoint(node) {
     parent: node.querySelector("parent")?.getAttribute("link"),
     child: node.querySelector("child")?.getAttribute("link"),
     xyz,
+    axis: parseVector(axisNode?.getAttribute("xyz") || "0 0 0"),
+    limit: {
+      lower: Number(limitNode?.getAttribute("lower") || 0),
+      upper: Number(limitNode?.getAttribute("upper") || 0),
+    },
     rpy: { x: rpy.x, y: rpy.y, z: rpy.z },
   };
 }
@@ -779,6 +839,10 @@ function formatMm(value) {
   return value == null ? "-" : `${Number(value).toFixed(1)} mm`;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
 function dot(left, right) {
   return left.x * right.x + left.y * right.y + left.z * right.z;
 }
@@ -802,6 +866,8 @@ function writeSceneState() {
     urdfLoadedMeshes: window.__g1dVisualizerState.urdfLoadedMeshes || 0,
     urdfFailedMeshes: window.__g1dVisualizerState.urdfFailedMeshes || 0,
     urdfProxy: Boolean(window.__g1dVisualizerState.urdfProxy),
+    columnExtensionMm: window.__g1dVisualizerState.columnExtensionMm || 0,
+    columnJointValuesMm: window.__g1dVisualizerState.columnJointValuesMm || {},
     cigaretteObjects: window.__g1dVisualizerState.cigaretteObjects || 0,
     lastCenterRobotM: window.__g1dVisualizerState.lastCenterRobotM || null,
   });
