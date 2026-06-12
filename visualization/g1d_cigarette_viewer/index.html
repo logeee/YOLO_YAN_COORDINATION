@@ -27,6 +27,11 @@
           <input id="sourceUrl" value="http://127.0.0.1:18081/xyz" />
         </label>
 
+        <label class="field">
+          <span>Robot State 地址</span>
+          <input id="robotStateUrl" value="/api/robot_state" />
+        </label>
+
         <div class="inline-fields">
           <label class="field">
             <span>类别</span>
@@ -49,16 +54,16 @@
 
         <div class="inline-fields">
           <label class="field">
-            <span>相机 X m</span>
-            <input id="cameraX" type="number" step="0.01" value="0.10" />
+            <span>相机偏移 X m</span>
+            <input id="cameraX" type="number" step="0.01" value="0.08" />
           </label>
           <label class="field">
-            <span>相机 Y m</span>
+            <span>相机偏移 Y m</span>
             <input id="cameraY" type="number" step="0.01" value="0.04" />
           </label>
           <label class="field">
-            <span>相机 Z m</span>
-            <input id="cameraZ" type="number" step="0.01" value="1.10" />
+            <span>相机偏移 Z m</span>
+            <input id="cameraZ" type="number" step="0.01" value="0.02" />
           </label>
         </div>
 
@@ -66,6 +71,18 @@
           <button id="fetchBtn" type="button">读取 /xyz</button>
           <button id="sampleBtn" type="button">示例</button>
           <button id="applyBtn" type="button">应用 JSON</button>
+        </div>
+
+        <div class="button-row">
+          <button id="stateBtn" type="button">读取状态</button>
+          <label class="toggle-field">
+            <input id="autoYolo" type="checkbox" checked />
+            <span>自动 YOLO</span>
+          </label>
+          <label class="field compact-field">
+            <span>刷新 s</span>
+            <input id="refreshSec" type="number" min="0.5" max="10" step="0.5" value="1.5" />
+          </label>
         </div>
 
         <div class="button-row">
@@ -92,6 +109,14 @@
           <div>
             <dt>长轴角</dt>
             <dd id="metricYaw">-</dd>
+          </div>
+          <div>
+            <dt>立柱展开</dt>
+            <dd id="metricColumn">-</dd>
+          </div>
+          <div>
+            <dt>状态来源</dt>
+            <dd id="metricState">-</dd>
           </div>
         </dl>
       </section>

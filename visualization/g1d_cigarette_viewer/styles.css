@@ -135,6 +135,29 @@ textarea {
   font-size: 12px;
 }
 
+.toggle-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid #33424d;
+  border-radius: 6px;
+  background: #0d1115;
+  color: #eef4f8;
+  font-size: 14px;
+}
+
+.toggle-field input {
+  width: 16px;
+  height: 16px;
+  accent-color: #64b6d9;
+}
+
+.compact-field span {
+  font-size: 11px;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

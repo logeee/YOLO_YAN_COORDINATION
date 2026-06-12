@@ -11,6 +11,7 @@ const CIGARETTE_SIZES_M = {
 const DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4;
 const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
 const DEFAULT_COLUMN_EXTENSION_MM = 420;
+const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.08, 0.04, 0.02);
 
 window.__g1dVisualizerError = null;
 window.__g1dVisualizerState = {};
@@ -25,6 +26,7 @@ const dom = {
   viewport: document.querySelector("#viewport"),
   statusText: document.querySelector("#statusText"),
   sourceUrl: document.querySelector("#sourceUrl"),
+  robotStateUrl: document.querySelector("#robotStateUrl"),
   labelSelect: document.querySelector("#labelSelect"),
   thicknessMm: document.querySelector("#thicknessMm"),
   columnExtensionMm: document.querySelector("#columnExtensionMm"),
@@ -32,6 +34,9 @@ const dom = {
   cameraY: document.querySelector("#cameraY"),
   cameraZ: document.querySelector("#cameraZ"),
   fetchBtn: document.querySelector("#fetchBtn"),
+  stateBtn: document.querySelector("#stateBtn"),
+  autoYolo: document.querySelector("#autoYolo"),
+  refreshSec: document.querySelector("#refreshSec"),
   sampleBtn: document.querySelector("#sampleBtn"),
   applyBtn: document.querySelector("#applyBtn"),
   normalViewBtn: document.querySelector("#normalViewBtn"),
@@ -42,6 +47,8 @@ const dom = {
   metricForward: document.querySelector("#metricForward"),
   metricNear: document.querySelector("#metricNear"),
   metricYaw: document.querySelector("#metricYaw"),
+  metricColumn: document.querySelector("#metricColumn"),
+  metricState: document.querySelector("#metricState"),
   sceneState: document.querySelector("#sceneState"),
 };
 
@@ -99,21 +106,29 @@ addGround();
 addRobotAxes(root, 0.38);
 
 let currentPose = null;
+let currentRobotState = null;
 let currentView = "normal";
 let lastFocus = new THREE.Vector3(0.24, 0.0, 0.0);
 let urdfJointControls = new Map();
+let urdfLinkGroups = new Map();
+let autoFetchTimer = null;
 
 init();
 
 async function init() {
   bindEvents();
   await loadRobot();
-  await loadSample();
+  await fetchRobotState({ silent: true });
+  await fetchPose({ fallbackToSample: true });
+  setupAutoRefresh();
   animate();
 }
 
 function bindEvents() {
-  dom.fetchBtn.addEventListener("click", fetchPose);
+  dom.fetchBtn.addEventListener("click", () => fetchPose({ fallbackToSample: false }));
+  dom.stateBtn.addEventListener("click", () => fetchRobotState({ silent: false }));
+  dom.autoYolo.addEventListener("change", setupAutoRefresh);
+  dom.refreshSec.addEventListener("input", setupAutoRefresh);
   dom.sampleBtn.addEventListener("click", loadSample);
   dom.applyBtn.addEventListener("click", applyJsonFromInput);
   dom.normalViewBtn.addEventListener("click", () => setView("normal"));
@@ -135,6 +150,20 @@ function bindEvents() {
   resize();
 }
 
+function setupAutoRefresh() {
+  if (autoFetchTimer) {
+    window.clearInterval(autoFetchTimer);
+    autoFetchTimer = null;
+  }
+  if (!dom.autoYolo.checked) return;
+  const intervalMs = Math.max(500, Number(dom.refreshSec.value || 1.5) * 1000);
+  autoFetchTimer = window.setInterval(() => {
+    fetchRobotState({ silent: true }).finally(() => {
+      fetchPose({ fallbackToSample: false, silent: true });
+    });
+  }, intervalMs);
+}
+
 async function loadRobot() {
   setStatus("读取 URDF");
   const text = await fetch("./g1_d.urdf").then((res) => res.text());
@@ -148,21 +177,42 @@ async function loadSample() {
   applyPose(pose, "已加载示例");
 }
 
-async function fetchPose() {
+async function fetchPose({ fallbackToSample = false, silent = false } = {}) {
   const url = new URL("/api/xyz", window.location.origin);
   url.searchParams.set("url", dom.sourceUrl.value.trim());
   if (dom.labelSelect.value) {
     url.searchParams.set("label", dom.labelSelect.value);
   }
-  setStatus("读取 /xyz");
+  if (!silent) setStatus("读取 YOLO /xyz");
   try {
     const payload = await fetch(url).then((res) => res.json());
     if (!payload.ok) {
       throw new Error(payload.error || "读取失败");
     }
-    applyPose(payload.pose, "已更新");
+    applyPose(payload.pose, "YOLO 已更新");
   } catch (error) {
-    setStatus(`失败：${error.message}`);
+    if (fallbackToSample) {
+      await loadSample();
+      setStatus(`YOLO 失败，已加载示例：${error.message}`);
+    } else if (!silent) {
+      setStatus(`YOLO 失败：${error.message}`);
+    }
+  }
+}
+
+async function fetchRobotState({ silent = false } = {}) {
+  const rawUrl = dom.robotStateUrl.value.trim() || "/api/robot_state";
+  const url = new URL(rawUrl, window.location.origin);
+  if (!silent) setStatus("读取机器人状态");
+  try {
+    const payload = await fetch(url).then((res) => res.json());
+    if (!payload.ok) {
+      throw new Error(payload.error || "读取状态失败");
+    }
+    applyRobotState(payload.state || payload);
+    if (!silent) setStatus("机器人状态已更新");
+  } catch (error) {
+    if (!silent) setStatus(`状态失败：${error.message}`);
   }
 }
 
@@ -256,11 +306,48 @@ function updateMetrics(pose) {
   dom.metricForward.textContent = formatMm(centerForward);
   dom.metricNear.textContent = formatMm(nearForward);
   dom.metricYaw.textContent = yaw == null ? "-" : `${Number(yaw).toFixed(1)}°`;
+  dom.metricColumn.textContent = `${Math.round(getColumnExtensionM() * 1000)} mm`;
+  dom.metricState.textContent = currentRobotState?.source || "default";
+}
+
+function applyRobotState(state) {
+  currentRobotState = state || {};
+  const joints = currentRobotState.joints && typeof currentRobotState.joints === "object" ? currentRobotState.joints : {};
+  if (currentRobotState.column_extension_mm != null) {
+    dom.columnExtensionMm.value = String(Math.round(Number(currentRobotState.column_extension_mm)));
+  }
+  const stateJointValues = { ...joints };
+  if (currentRobotState.column_extension_mm != null) {
+    const totalM = clamp(Number(currentRobotState.column_extension_mm) / 1000, 0, 0.42);
+    stateJointValues.LZ_mt_Joint = totalM / 2;
+    stateJointValues.LZ_it_Joint = totalM / 2;
+  }
+  applyJointState(stateJointValues);
+  updateColumnState();
+  updateCameraMarker();
+  if (currentPose) {
+    renderPose(currentPose);
+    updateMetrics(currentPose);
+  }
+  window.__g1dVisualizerState.robotStateSource = currentRobotState.source || "unknown";
+  window.__g1dVisualizerState.robotStateUpdatedAt = currentRobotState.updated_at || null;
+  writeSceneState();
+}
+
+function applyJointState(joints) {
+  for (const [name, control] of urdfJointControls.entries()) {
+    const value = joints && Object.prototype.hasOwnProperty.call(joints, name)
+      ? Number(joints[name])
+      : jointValue(control.joint);
+    setJointTransform(control, value);
+  }
+  window.__g1dVisualizerState.appliedJointCount = joints ? Object.keys(joints).length : 0;
 }
 
 function buildUrdfSkeleton(urdfText, parentGroup) {
   parentGroup.clear();
   urdfJointControls = new Map();
+  urdfLinkGroups = new Map();
   const xml = new DOMParser().parseFromString(urdfText, "application/xml");
   const links = [...xml.querySelectorAll("link")].map((node) => node.getAttribute("name")).filter(Boolean);
   const joints = [...xml.querySelectorAll("joint")].map(parseJoint).filter((joint) => joint.parent && joint.child);
@@ -277,6 +364,7 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
   const rootLinkGroup = new THREE.Group();
   rootLinkGroup.name = rootLink;
   parentGroup.add(rootLinkGroup);
+  urdfLinkGroups.set(rootLink, rootLinkGroup);
   if (!addUrdfVisuals(rootLinkGroup, rootLink, visualMap)) {
     addLinkProxy(rootLinkGroup, rootLink);
   }
@@ -289,11 +377,13 @@ function buildUrdfSkeleton(urdfText, parentGroup) {
       childGroup.position.copy(jointPosition(joint));
       childGroup.rotation.set(joint.rpy.x, joint.rpy.y, joint.rpy.z, "XYZ");
       group.add(childGroup);
-      if (joint.type === "prismatic") {
+      urdfLinkGroups.set(joint.child, childGroup);
+      if (joint.type !== "fixed") {
         urdfJointControls.set(joint.name, {
           group: childGroup,
           joint,
           baseXYZ: joint.xyz.clone(),
+          baseQuaternion: childGroup.quaternion.clone(),
         });
       }
       addRod(group, new THREE.Vector3(), childGroup.position);
@@ -350,6 +440,30 @@ function jointValue(joint) {
   return clamp(perJointM, joint.limit.lower, joint.limit.upper);
 }
 
+function setJointTransform(control, rawValue) {
+  const joint = control.joint;
+  const value = clampJointValue(joint, Number.isFinite(rawValue) ? rawValue : 0);
+  if (joint.type === "prismatic") {
+    control.group.position.copy(joint.xyz.clone().add(joint.axis.clone().multiplyScalar(value)));
+    control.group.quaternion.copy(control.baseQuaternion);
+  } else if (joint.type === "revolute" || joint.type === "continuous") {
+    control.group.position.copy(control.baseXYZ);
+    const axis = normalizedVector(joint.axis);
+    const jointRotation = new THREE.Quaternion().setFromAxisAngle(axis, value);
+    control.group.quaternion.copy(control.baseQuaternion).multiply(jointRotation);
+  } else {
+    control.group.position.copy(control.baseXYZ);
+    control.group.quaternion.copy(control.baseQuaternion);
+  }
+}
+
+function clampJointValue(joint, value) {
+  if (joint.limit.upper > joint.limit.lower) {
+    return clamp(value, joint.limit.lower, joint.limit.upper);
+  }
+  return value;
+}
+
 function getColumnExtensionM() {
   const rawMm = Number(dom.columnExtensionMm?.value || DEFAULT_COLUMN_EXTENSION_MM);
   return clamp(rawMm / 1000, 0, 0.42);
@@ -359,7 +473,7 @@ function applyColumnExtension() {
   for (const name of COLUMN_JOINT_NAMES) {
     const control = urdfJointControls.get(name);
     if (!control) continue;
-    control.group.position.copy(jointPosition(control.joint));
+    setJointTransform(control, jointValue(control.joint));
   }
   updateColumnState();
   writeSceneState();
@@ -660,15 +774,43 @@ function updateCameraMarker() {
   body.position.copy(mount);
   cameraMarkerGroup.add(body);
   addLabel(cameraMarkerGroup, "left camera", mount.clone().add(new THREE.Vector3(0.02, 0.02, 0.055)), "#9be2ff");
-  cameraMarkerGroup.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), mount, 0.16, 0xff5a5f, 0.035, 0.02));
+  addCameraOpticalAxes(cameraMarkerGroup, mount, DEFAULT_CAMERA_TO_VERTICAL_DEG);
 }
 
 function getCameraMount() {
-  return new THREE.Vector3(
+  const head = getLinkWorldPosition("head_link") || new THREE.Vector3();
+  const offset = new THREE.Vector3(
     Number(dom.cameraX.value || 0),
     Number(dom.cameraY.value || 0),
     Number(dom.cameraZ.value || 0),
   );
+  return head.add(offset);
+}
+
+function getLinkWorldPosition(linkName) {
+  const group = urdfLinkGroups.get(linkName);
+  if (!group) return null;
+  robotGroup.updateMatrixWorld(true);
+  return group.getWorldPosition(new THREE.Vector3());
+}
+
+function addCameraOpticalAxes(group, origin, cameraToVerticalDeg) {
+  const axes = cameraOpticalAxesInRobot(cameraToVerticalDeg);
+  group.add(new THREE.ArrowHelper(axes.xRight, origin, 0.16, 0xff5a5f, 0.035, 0.02));
+  group.add(new THREE.ArrowHelper(axes.yDown, origin, 0.16, 0x35d477, 0.035, 0.02));
+  group.add(new THREE.ArrowHelper(axes.zForward, origin, 0.22, 0x4f8cff, 0.045, 0.025));
+  addLabel(group, "cam X", origin.clone().add(axes.xRight.clone().multiplyScalar(0.18)), "#ff777b");
+  addLabel(group, "cam Y", origin.clone().add(axes.yDown.clone().multiplyScalar(0.18)), "#53e28d");
+  addLabel(group, "cam Z 42.4°", origin.clone().add(axes.zForward.clone().multiplyScalar(0.25)), "#72a3ff");
+}
+
+function cameraOpticalAxesInRobot(cameraToVerticalDeg) {
+  const theta = THREE.MathUtils.degToRad(Number(cameraToVerticalDeg || DEFAULT_CAMERA_TO_VERTICAL_DEG));
+  return {
+    xRight: new THREE.Vector3(0, -1, 0),
+    yDown: new THREE.Vector3(-Math.cos(theta), 0, -Math.sin(theta)).normalize(),
+    zForward: new THREE.Vector3(Math.sin(theta), 0, -Math.cos(theta)).normalize(),
+  };
 }
 
 function getPoint(value) {
@@ -843,6 +985,12 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function normalizedVector(vector) {
+  const length = vector.length();
+  if (length <= 1e-9) return new THREE.Vector3(0, 0, 1);
+  return vector.clone().divideScalar(length);
+}
+
 function dot(left, right) {
   return left.x * right.x + left.y * right.y + left.z * right.z;
 }
@@ -868,7 +1016,22 @@ function writeSceneState() {
     urdfProxy: Boolean(window.__g1dVisualizerState.urdfProxy),
     columnExtensionMm: window.__g1dVisualizerState.columnExtensionMm || 0,
     columnJointValuesMm: window.__g1dVisualizerState.columnJointValuesMm || {},
+    cameraMountM: vectorToArray(getCameraMount()),
+    cameraParentLink: "head_link",
+    cameraOpticalAngleDeg: DEFAULT_CAMERA_TO_VERTICAL_DEG,
+    robotStateSource: window.__g1dVisualizerState.robotStateSource || null,
+    robotStateUpdatedAt: window.__g1dVisualizerState.robotStateUpdatedAt || null,
+    appliedJointCount: window.__g1dVisualizerState.appliedJointCount || 0,
     cigaretteObjects: window.__g1dVisualizerState.cigaretteObjects || 0,
     lastCenterRobotM: window.__g1dVisualizerState.lastCenterRobotM || null,
   });
+}
+
+function vectorToArray(vector) {
+  return [roundNumber(vector.x, 4), roundNumber(vector.y, 4), roundNumber(vector.z, 4)];
+}
+
+function roundNumber(value, digits) {
+  const factor = 10 ** digits;
+  return Math.round(Number(value) * factor) / factor;
 }
