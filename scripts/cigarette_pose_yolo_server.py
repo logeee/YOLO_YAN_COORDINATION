@@ -1064,8 +1064,8 @@ def _g1d_visualization_table(payload: dict[str, Any]) -> str:
         _visualization_row(
             "相机模型",
             "left camera",
-            f"{camera.get('mount_parent_link') or 'head_link'} / {_fmt_number(camera.get('camera_to_vertical_deg'), ' deg', 1)}",
-            "相机挂在头部 link，光轴使用 42.4° 安装角",
+            f"{camera.get('mount_parent_link') or 'torso_link'} / {_fmt_number(camera.get('camera_to_vertical_deg'), ' deg', 1)}",
+            "相机使用官方 d435_joint 挂点，光轴使用 47.6° 安装角",
         ),
         _visualization_row(
             "本体状态",

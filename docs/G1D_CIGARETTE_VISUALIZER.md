@@ -79,7 +79,7 @@ YOLO `/xyz` 里会返回一个精简对象：
 | `g1d_visualization.box.center_xyz_mm` | YOLO/PnP | 烟盒中心点，left camera optical 坐标 |
 | `g1d_visualization.box.near_edge_midpoint_xyz_mm` | YOLO/PnP | 靠近机器人那条边的中点 |
 | `g1d_visualization.camera.mount_parent_link` | 固定配置 | left camera 挂在 `torso_link` |
-| `g1d_visualization.camera.camera_to_vertical_deg` | 固定配置 | left camera 光轴与地面垂直方向夹角，当前 42.4° |
+| `g1d_visualization.camera.camera_to_vertical_deg` | 固定配置 | left camera 光轴与地面垂直方向夹角，当前 47.6° |
 
 ## 相机
 
@@ -97,7 +97,7 @@ camera_world = torso_link_world * camera_offset_in_torso_link
 蓝色：camera +Z，光轴方向
 ```
 
-光轴 `camera +Z` 使用之前确认过的安装角 `42.4°`，相对地面垂直方向向前下方倾斜。
+光轴 `camera +Z` 使用官方 URDF 和水平仪确认过的安装角 `47.6°`，相对地面垂直方向向前下方倾斜。
 
 注意：相机偏移和 optical 坐标轴现在都会跟随 `torso_link` 的 world transform。也就是说立柱、腰部和上身父链变化后，left camera 会跟着机器人模型一起移动和旋转。
 

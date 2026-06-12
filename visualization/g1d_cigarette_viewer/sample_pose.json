@@ -43,7 +43,7 @@
   "robot_alignment": {
     "ok": true,
     "frame": "left_camera_optical",
-    "camera_to_vertical_deg": 42.4,
+    "camera_to_vertical_deg": 47.6,
     "basis": {
       "x_right_unit_xyz": [
         1.0,

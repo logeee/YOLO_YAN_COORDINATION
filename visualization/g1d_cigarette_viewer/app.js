@@ -8,7 +8,7 @@ const CIGARETTE_SIZES_M = {
   Liqun: { long: 0.280, short: 0.089, thickness: 0.02 },
 };
 
-const DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4;
+const DEFAULT_CAMERA_TO_VERTICAL_DEG = 47.6;
 const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
 const DEFAULT_COLUMN_EXTENSION_MM = 420;
 const DEFAULT_CAMERA_PARENT_LINK = "torso_link";
@@ -861,7 +861,7 @@ function addCameraOpticalAxes(group, frame) {
   group.add(new THREE.ArrowHelper(axes.zForward, origin, 0.22, 0x4f8cff, 0.045, 0.025));
   addLabel(group, "cam X", origin.clone().add(axes.xRight.clone().multiplyScalar(0.18)), "#ff777b");
   addLabel(group, "cam Y", origin.clone().add(axes.yDown.clone().multiplyScalar(0.18)), "#53e28d");
-  addLabel(group, "cam Z 42.4°", origin.clone().add(axes.zForward.clone().multiplyScalar(0.25)), "#72a3ff");
+  addLabel(group, "cam Z 47.6°", origin.clone().add(axes.zForward.clone().multiplyScalar(0.25)), "#72a3ff");
 }
 
 function cameraOpticalAxesInHeadLocal(cameraToVerticalDeg) {

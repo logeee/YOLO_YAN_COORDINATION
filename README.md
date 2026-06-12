@@ -293,7 +293,7 @@ curl -s http://127.0.0.1:18081/xyz \
 ```text
 selected_orientation                              当前自动选中的横/竖物理尺寸假设
 robot_alignment.target.range_from_left_camera_mm   左目光心到上表面中心点的直线距离
-robot_alignment.target.ground_forward_mm           按相机安装角 42.4° 投影后的地面前向距离
+robot_alignment.target.ground_forward_mm           按相机安装角 47.6° 投影后的地面前向距离
 robot_alignment.target.right_mm                    目标相对左目/机器人向右的偏差
 robot_alignment.target.bearing_right_deg           目标相对正前方偏右多少度
 robot_alignment.target.cmd_vel_yaw_to_center_deg   要先朝目标转多少度，正号按 ROS angular.z 左转约定
@@ -450,7 +450,7 @@ http://127.0.0.1:18085/
 http://<机器人IP>:18085/
 ```
 
-页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认读取 YOLO `/xyz` 的 `g1d_visualization` 数据，失败时才用示例数据。左目相机绑定到 `head_link`，并画出 `42.4°` optical 坐标轴。机器人状态从 `/api/robot_state` 读取；机器人上默认接宇树 DDS `rt/lowstate` 和 `rt/hispeed_state`，可驱动立柱和 URDF joint。
+页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认读取 YOLO `/xyz` 的 `g1d_visualization` 数据，失败时才用示例数据。左目相机使用官方 `d435_joint`，绑定到 `torso_link`，并画出 `47.6°` optical 坐标轴。机器人状态从 `/api/robot_state` 读取；机器人上默认接宇树 DDS `rt/lowstate` 和 `rt/hispeed_state`，可驱动立柱和 URDF joint。
 
 YOLO `/debug` 页面现在也会显示一块 `G1-D 可视化需要的数据`，包括 joint states 需求、朝目标转角、烟盒长轴角、中心垂直距离、中心地面前向和近端边地面前向。
 
