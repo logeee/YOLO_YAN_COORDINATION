@@ -1107,7 +1107,7 @@ function resize() {
   const rect = dom.viewport.getBoundingClientRect();
   const width = Math.max(1, rect.width);
   const height = Math.max(1, rect.height);
-  renderer.setSize(width, height, false);
+  renderer.setSize(width, height, true);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   if (lastFrameBox) {
