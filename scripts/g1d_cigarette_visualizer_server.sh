@@ -12,7 +12,7 @@ for setup in /opt/ros/noetic/setup.bash /opt/ros/melodic/setup.bash; do
   fi
 done
 
-exec python scripts/g1d_cigarette_visualizer_server.py \
+exec "${PYTHON:-python3}" scripts/g1d_cigarette_visualizer_server.py \
   --bind "${VISUALIZER_BIND:-0.0.0.0}" \
   --port "${VISUALIZER_PORT:-18085}" \
   --xyz-url "${VISUALIZER_XYZ_URL:-http://127.0.0.1:18081/xyz}" \
