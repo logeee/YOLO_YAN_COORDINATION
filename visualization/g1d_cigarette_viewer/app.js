@@ -11,7 +11,7 @@ const CIGARETTE_SIZES_M = {
 const DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4;
 const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
 const DEFAULT_COLUMN_EXTENSION_MM = 420;
-const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.08, 0.04, 0.02);
+const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.08, 0.04, 0.43);
 
 window.__g1dVisualizerError = null;
 window.__g1dVisualizerState = {};
@@ -813,9 +813,9 @@ function getCameraFrame(pose = null) {
   const parentPosition = headTransform?.position || new THREE.Vector3();
   const parentQuaternion = headTransform?.quaternion || new THREE.Quaternion();
   const localOffset = new THREE.Vector3(
-    Number(dom.cameraX.value || 0),
-    Number(dom.cameraY.value || 0),
-    Number(dom.cameraZ.value || 0),
+    numberOrDefault(dom.cameraX.value, DEFAULT_CAMERA_OFFSET_M.x),
+    numberOrDefault(dom.cameraY.value, DEFAULT_CAMERA_OFFSET_M.y),
+    numberOrDefault(dom.cameraZ.value, DEFAULT_CAMERA_OFFSET_M.z),
   );
   const origin = parentPosition.clone().add(localOffset.clone().applyQuaternion(parentQuaternion));
   const cameraToVerticalDeg = Number(
@@ -1081,4 +1081,9 @@ function vectorToArray(vector) {
 function roundNumber(value, digits) {
   const factor = 10 ** digits;
   return Math.round(Number(value) * factor) / factor;
+}
+
+function numberOrDefault(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
 }

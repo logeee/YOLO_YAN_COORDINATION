@@ -101,6 +101,8 @@ camera_world = head_link_world * camera_offset_in_head_link
 
 注意：相机偏移和 optical 坐标轴现在都会跟随 `head_link` 的 world transform。也就是说立柱、腰部和头部父链变化后，left camera 会跟着机器人模型一起移动和旋转。
 
+当前默认挂点是 `head_link` 局部坐标 `[0.08, 0.04, 0.43]m`，这个位置在头部 mesh 前脸附近。`head_link` 的 joint origin 本身在头部下方，不是镜头位置。
+
 ## 机器人状态
 
 页面会读：
