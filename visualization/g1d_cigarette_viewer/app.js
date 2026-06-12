@@ -11,7 +11,7 @@ const CIGARETTE_SIZES_M = {
 const DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4;
 const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
 const DEFAULT_COLUMN_EXTENSION_MM = 420;
-const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.08, 0.04, 0.43);
+const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.074, 0.04, 0.495);
 
 window.__g1dVisualizerError = null;
 window.__g1dVisualizerState = {};
@@ -796,7 +796,7 @@ function updateCameraMarker() {
   cameraMarkerGroup.clear();
   const frame = getCameraFrame(currentPose);
   const mount = frame.origin;
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.035, 0.035), materials.camera);
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.032, 0.024, 0.024), materials.camera);
   body.position.copy(mount);
   body.quaternion.copy(frame.parentQuaternion);
   cameraMarkerGroup.add(body);
