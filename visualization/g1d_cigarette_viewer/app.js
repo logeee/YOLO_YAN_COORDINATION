@@ -13,6 +13,10 @@ const COLUMN_JOINT_NAMES = ["LZ_mt_Joint", "LZ_it_Joint"];
 const DEFAULT_COLUMN_EXTENSION_MM = 420;
 const DEFAULT_CAMERA_PARENT_LINK = "torso_link";
 const DEFAULT_CAMERA_OFFSET_M = new THREE.Vector3(0.0576235, 0.01753, 0.42987);
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const IS_COMPACT_MODE = URL_PARAMS.get("compact") === "1" || URL_PARAMS.get("embedded") === "1";
+const NO_AUTO_FETCH_POSE = URL_PARAMS.get("no_fetch") === "1" || URL_PARAMS.get("pose") === "posted";
+const DEFAULT_VIEW_FOCUS = new THREE.Vector3(0.18, -0.04, 0.72);
 
 window.__g1dVisualizerError = null;
 window.__g1dVisualizerState = {};
@@ -52,9 +56,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0c1014);
 
 const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 20);
-camera.position.set(1.85, -1.75, 1.24);
+camera.position.set(2.2, -2.1, 1.45);
 camera.up.set(0, 0, 1);
-camera.lookAt(0.2, -0.02, 0.68);
+camera.lookAt(DEFAULT_VIEW_FOCUS);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -64,11 +68,11 @@ dom.viewport.appendChild(renderer.domElement);
 const stlLoader = new STLLoader();
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.2, -0.02, 0.68);
+controls.target.copy(DEFAULT_VIEW_FOCUS);
 controls.enableDamping = false;
 controls.enableRotate = true;
 controls.minDistance = 0.45;
-controls.maxDistance = 5.0;
+controls.maxDistance = 8.0;
 
 const root = new THREE.Group();
 scene.add(root);
@@ -104,17 +108,61 @@ addRobotAxes(root, 0.38);
 let currentPose = null;
 let currentRobotState = null;
 let currentView = "normal";
-let lastFocus = new THREE.Vector3(0.24, 0.0, 0.0);
+let lastFrameBox = null;
+let pendingFrameRequest = 0;
 let urdfJointControls = new Map();
 let urdfLinkGroups = new Map();
 
 init();
 
+window.__g1dViewerDebug = {
+  getCameraState: () => ({
+    view: currentView,
+    position: vectorToArray(camera.position),
+    target: vectorToArray(controls.target),
+    up: vectorToArray(camera.up),
+    aspect: roundNumber(camera.aspect, 3),
+  }),
+  receivePose: (pose) => applyPose(pose, "YOLO 当前数据"),
+  setView,
+  frameScene,
+};
+
 async function init() {
+  applyUrlParams();
   bindEvents();
+  bindEmbeddedMessages();
   await loadRobot();
-  await refreshSceneData({ fallbackToSample: true, silent: true });
+  if (NO_AUTO_FETCH_POSE) {
+    setStatus("等待当前 YOLO 数据");
+    try {
+      await fetchRobotState({ silent: true });
+    } catch {
+      writeSceneState();
+    }
+    frameScene();
+    notifyEmbeddedReady();
+  } else {
+    await refreshSceneData({ fallbackToSample: true, silent: true });
+    notifyEmbeddedReady();
+  }
   animate();
+}
+
+function applyUrlParams() {
+  document.body.classList.toggle("compact-mode", IS_COMPACT_MODE);
+  const sourceUrl = URL_PARAMS.get("source_url") || URL_PARAMS.get("xyz_url");
+  if (sourceUrl) dom.sourceUrl.value = sourceUrl;
+  const robotStateUrl = URL_PARAMS.get("robot_state_url");
+  if (robotStateUrl) dom.robotStateUrl.value = robotStateUrl;
+  const label = URL_PARAMS.get("label");
+  if (label && [...dom.labelSelect.options].some((option) => option.value === label)) {
+    dom.labelSelect.value = label;
+  }
+  const view = URL_PARAMS.get("view");
+  if (["normal", "top", "side"].includes(view)) {
+    currentView = view;
+  }
 }
 
 function bindEvents() {
@@ -132,6 +180,25 @@ function bindEvents() {
   const resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(dom.viewport);
   resize();
+}
+
+function bindEmbeddedMessages() {
+  window.addEventListener("message", (event) => {
+    const data = event.data;
+    if (!data || typeof data !== "object") return;
+    if (data.type !== "g1d-visualizer-pose") return;
+    if (data.robotState && typeof data.robotState === "object") {
+      applyRobotState(data.robotState);
+    }
+    if (data.pose && typeof data.pose === "object") {
+      applyPose(data.pose, "YOLO 当前数据");
+    }
+  });
+}
+
+function notifyEmbeddedReady() {
+  if (!IS_COMPACT_MODE || window.parent === window) return;
+  window.parent.postMessage({ type: "g1d-visualizer-ready" }, "*");
 }
 
 async function refreshSceneData({ fallbackToSample = false, silent = false } = {}) {
@@ -566,6 +633,7 @@ function loadUrdfStl(group, linkName, visual) {
       window.__g1dVisualizerState.urdfLoadedMeshes = (window.__g1dVisualizerState.urdfLoadedMeshes || 0) + 1;
       window.__g1dVisualizerState.robotObjects = countObjects(robotGroup);
       writeSceneState();
+      scheduleFrameScene();
     },
     undefined,
     () => {
@@ -573,6 +641,7 @@ function loadUrdfStl(group, linkName, visual) {
       window.__g1dVisualizerState.urdfFailedMeshes = (window.__g1dVisualizerState.urdfFailedMeshes || 0) + 1;
       window.__g1dVisualizerState.robotObjects = countObjects(robotGroup);
       writeSceneState();
+      scheduleFrameScene();
     },
   );
 }
@@ -947,35 +1016,91 @@ function addLabel(group, text, position, color = "#ffffff") {
   return sprite;
 }
 
-function frameScene(target) {
-  lastFocus = new THREE.Vector3(target.x * 0.5, target.y * 0.5, 0.0);
+function scheduleFrameScene() {
+  if (pendingFrameRequest) cancelAnimationFrame(pendingFrameRequest);
+  pendingFrameRequest = requestAnimationFrame(() => {
+    pendingFrameRequest = 0;
+    frameScene();
+  });
+}
+
+function frameScene() {
+  lastFrameBox = computeFrameBox();
   setView(currentView, false);
 }
 
 function setView(mode, immediate = true) {
   currentView = mode;
-  const focus = new THREE.Vector3(0.2, -0.02, 0.68);
+  const frameBox = lastFrameBox || computeFrameBox();
   if (mode === "top") {
-    camera.up.set(1, 0, 0);
-    camera.position.set(0.22, -0.02, 3.05);
-    controls.target.copy(focus);
     controls.enableRotate = false;
+    fitCameraToBox(frameBox, new THREE.Vector3(0.02, 0.0, 1.0), new THREE.Vector3(1, 0, 0), 1.18);
   } else if (mode === "side") {
-    camera.up.set(0, 0, 1);
-    camera.position.set(0.2, -3.1, 0.9);
-    controls.target.copy(focus);
     controls.enableRotate = true;
+    fitCameraToBox(frameBox, new THREE.Vector3(0.02, -1.0, 0.08), new THREE.Vector3(0, 0, 1), 1.16);
   } else {
-    camera.up.set(0, 0, 1);
-    camera.position.set(1.85, -1.75, 1.24);
-    controls.target.copy(focus);
     controls.enableRotate = true;
+    fitCameraToBox(frameBox, new THREE.Vector3(1.45, -1.25, 0.72), new THREE.Vector3(0, 0, 1), 1.12);
   }
-  camera.lookAt(controls.target);
-  controls.update();
   if (immediate) {
     setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "正常地面视角");
   }
+}
+
+function computeFrameBox() {
+  const box = new THREE.Box3();
+  expandBoundsFromObject(box, robotGroup);
+  expandBoundsFromObject(box, cameraMarkerGroup);
+  expandBoundsFromObject(box, cigaretteGroup);
+  if (box.isEmpty()) {
+    box.setFromCenterAndSize(DEFAULT_VIEW_FOCUS, new THREE.Vector3(1.2, 0.9, 1.9));
+  }
+  const size = box.getSize(new THREE.Vector3());
+  const pad = new THREE.Vector3(
+    Math.max(0.08, size.x * 0.08),
+    Math.max(0.08, size.y * 0.08),
+    Math.max(0.08, size.z * 0.08),
+  );
+  box.min.sub(pad);
+  box.max.add(pad);
+  return box;
+}
+
+function expandBoundsFromObject(box, object) {
+  object.updateMatrixWorld(true);
+  object.traverse((child) => {
+    if (!child.visible || child.isSprite || !child.geometry) return;
+    if (!child.geometry.boundingBox) {
+      child.geometry.computeBoundingBox();
+    }
+    if (!child.geometry.boundingBox) return;
+    const childBox = child.geometry.boundingBox.clone().applyMatrix4(child.matrixWorld);
+    if (!childBox.isEmpty()) {
+      box.union(childBox);
+    }
+  });
+}
+
+function fitCameraToBox(box, direction, up, padding = 1.15) {
+  const center = box.getCenter(new THREE.Vector3());
+  const sphere = box.getBoundingSphere(new THREE.Sphere());
+  const safeDirection = normalizedVector(direction);
+  const halfVerticalFov = THREE.MathUtils.degToRad(camera.fov * 0.5);
+  const halfHorizontalFov = Math.atan(Math.tan(halfVerticalFov) * Math.max(0.1, camera.aspect));
+  const radius = Math.max(0.35, sphere.radius * padding);
+  const distance = Math.max(
+    0.85,
+    radius / Math.sin(Math.max(0.1, halfVerticalFov)),
+    radius / Math.sin(Math.max(0.1, halfHorizontalFov)),
+  );
+  camera.up.copy(up);
+  camera.position.copy(center).add(safeDirection.multiplyScalar(distance));
+  controls.target.copy(center);
+  camera.near = Math.max(0.005, distance - radius * 3.0);
+  camera.far = Math.max(20, distance + radius * 4.0);
+  camera.lookAt(center);
+  camera.updateProjectionMatrix();
+  controls.update();
 }
 
 function resize() {
@@ -985,6 +1110,9 @@ function resize() {
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
+  if (lastFrameBox) {
+    setView(currentView, false);
+  }
 }
 
 function animate() {

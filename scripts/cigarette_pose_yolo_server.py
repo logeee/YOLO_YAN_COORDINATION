@@ -1090,6 +1090,50 @@ def _g1d_visualization_table(payload: dict[str, Any]) -> str:
 ORIENTATION_DISPLAY_ORDER = ("long_x_short_y", "short_x_long_y")
 
 
+def _embedded_g1d_visualizer_html(payload: dict[str, Any]) -> str:
+    payload_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return f"""
+  <section class="g1d-visualizer-card">
+    <div class="g1d-visualizer-title">
+      <h2>G1-D / 烟盒 3D 相对位置</h2>
+      <span>使用本次 /debug 已计算结果，不重新拍照</span>
+    </div>
+    <iframe
+      id="g1dVisualizerFrame"
+      class="g1d-visualizer-frame"
+      title="G1-D cigarette relative position"
+      loading="eager"
+    ></iframe>
+    <script id="g1dCurrentPosePayload" type="application/json">{payload_json}</script>
+    <script>
+      (() => {{
+        const frame = document.getElementById("g1dVisualizerFrame");
+        const payloadEl = document.getElementById("g1dCurrentPosePayload");
+        if (!frame || !payloadEl) return;
+        const visualizerOrigin = `${{window.location.protocol}}//${{window.location.hostname}}:18085`;
+        const payload = JSON.parse(payloadEl.textContent || "{{}}");
+        frame.src = `${{visualizerOrigin}}/?compact=1&embedded=1&no_fetch=1&view=normal&t=${{Date.now()}}`;
+        const postPayload = () => {{
+          if (!frame.contentWindow) return;
+          frame.contentWindow.postMessage({{ type: "g1d-visualizer-pose", pose: payload }}, visualizerOrigin);
+        }};
+        frame.addEventListener("load", () => {{
+          postPayload();
+          setTimeout(postPayload, 350);
+          setTimeout(postPayload, 1200);
+        }});
+        window.addEventListener("message", (event) => {{
+          if (event.origin !== visualizerOrigin) return;
+          if (event.data && event.data.type === "g1d-visualizer-ready") {{
+            postPayload();
+          }}
+        }});
+      }})();
+    </script>
+  </section>
+"""
+
+
 def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     point_adjustments = payload.get("point_adjustments") if isinstance(payload, dict) else {}
     if not isinstance(point_adjustments, dict):
@@ -1152,6 +1196,11 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     img {{ width: 100%; max-width: 640px; height: auto; display: block; background: #f0f4f8; }}
     .wide {{ grid-column: 1 / -1; }}
     .wide img {{ max-width: 1100px; }}
+    .g1d-visualizer-card {{ margin: 16px 0 18px; border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; }}
+    .g1d-visualizer-title {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }}
+    .g1d-visualizer-title h2 {{ margin: 0; }}
+    .g1d-visualizer-title span {{ color: #627d98; font-size: 13px; }}
+    .g1d-visualizer-frame {{ width: 100%; height: 420px; border: 0; border-radius: 6px; display: block; background: #0c1014; }}
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
     th, td {{ border: 1px solid #d9e2ec; padding: 5px; vertical-align: top; }}
     th {{ background: #f0f4f8; }}
@@ -1168,6 +1217,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
   <div class="status">{status_line}</div>
   <h2>关键数据</h2>
   {_key_summary_html(payload)}
+  {_embedded_g1d_visualizer_html(payload)}
   <h2>G1-D 可视化需要的数据</h2>
   {_g1d_visualization_table(payload)}
   <h2>横竖两套假设对比</h2>

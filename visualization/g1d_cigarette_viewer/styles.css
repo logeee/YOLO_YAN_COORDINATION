@@ -257,6 +257,39 @@ textarea {
   background: #d8aa39;
 }
 
+body.compact-mode {
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.compact-mode .app-shell {
+  display: block;
+  height: 100vh;
+  width: 100vw;
+}
+
+body.compact-mode .tool-panel {
+  display: none;
+}
+
+body.compact-mode .scene-panel {
+  width: 100vw;
+  height: 100vh;
+}
+
+body.compact-mode .legend {
+  left: 10px;
+  bottom: 10px;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+body.compact-mode .legend i {
+  width: 8px;
+  height: 8px;
+}
+
 @media (max-width: 900px) {
   body {
     overflow: auto;
