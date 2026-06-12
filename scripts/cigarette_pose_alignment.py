@@ -18,7 +18,7 @@ from typing import Any, List
 
 
 DEFAULT_POSE_URL = "http://127.0.0.1:18081/pose"
-DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4
+DEFAULT_CAMERA_TO_VERTICAL_DEG = 47.6
 
 
 def _round(value: float, ndigits: int = 3) -> float:

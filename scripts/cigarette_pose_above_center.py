@@ -7,13 +7,13 @@ Input/output coordinates use the left camera optical frame:
     +Z: camera forward/depth
 
 The default ground relation is the robot's current camera installation:
-the +Z optical axis is 42.4 degrees away from the vertical-down ground
+the +Z optical axis is 47.6 degrees away from the vertical-down ground
 direction in the camera Y-Z plane. Therefore vertical-up in the camera frame is:
-    [0, -sin(42.4 deg), -cos(42.4 deg)]
+    [0, -sin(47.6 deg), -cos(47.6 deg)]
 
 The ground-parallel direction perpendicular to the camera X axis is the
 projection of camera +Z onto the ground plane:
-    [0, -cos(42.4 deg), sin(42.4 deg)]
+    [0, -cos(47.6 deg), sin(47.6 deg)]
 
 This script is intentionally perception-only. It never sends robot commands.
 """
@@ -29,7 +29,7 @@ from typing import Any
 
 
 DEFAULT_POSE_URL = "http://127.0.0.1:18081/xyz"
-DEFAULT_CAMERA_TO_VERTICAL_DEG = 42.4
+DEFAULT_CAMERA_TO_VERTICAL_DEG = 47.6
 DEFAULT_GROUND_OFFSET_MM = 0.0
 
 

@@ -880,7 +880,7 @@ fraction_from_head    从头部往内走的比例，默认 0.2
 distance_from_head_mm 从头部往内走的距离，等于长边长度 / 5
 ```
 
-`box_head_point_above_xyz_mm` 是在 `box_head_point_xyz_mm` 的基础上沿地面垂直向上抬高，默认高度是 `100mm`，默认角度仍然是 `42.4°`。
+`box_head_point_above_xyz_mm` 是在 `box_head_point_xyz_mm` 的基础上沿地面垂直向上抬高，默认高度是 `100mm`，默认角度是 `47.6°`。
 
 只打印头部往内 1/5 点：
 
@@ -951,15 +951,15 @@ left_camera_optical:
 +Y = 图像下方
 +Z = 相机前方/深度
 
-相机 +Z 轴与地面垂直向下方向夹角 = 42.4°
+相机 +Z 轴与地面垂直向下方向夹角 = 47.6°
 ```
 
 默认使用真实垂直方向的 Y-Z 平面向量。脚本里也保留了一个“垂直于 X 轴、平行于地面”的 Y-Z 平面向量，后面需要 5cm 水平偏移时再通过 `--ground-offset-mm` 打开。这个地面方向定义为相机 `+Z` 在地面平面上的投影；如果方向反了，把 `--ground-offset-mm 50` 改成 `--ground-offset-mm -50`。
 
 ```text
-vertical_down_unit_xyz = [0, sin(42.4°), cos(42.4°)]
-vertical_up_unit_xyz   = [0, -sin(42.4°), -cos(42.4°)]
-ground_forward_unit_xyz = [0, -cos(42.4°), sin(42.4°)]
+vertical_down_unit_xyz = [0, sin(47.6°), cos(47.6°)]
+vertical_up_unit_xyz   = [0, -sin(47.6°), -cos(47.6°)]
+ground_forward_unit_xyz = [0, -cos(47.6°), sin(47.6°)]
 
 100mm 上方偏移约为      [0.0, -67.4, -73.8] mm
 默认最终偏移约为        [0.0, -67.4, -73.8] mm
@@ -973,8 +973,8 @@ ground_forward_unit_xyz = [0, -cos(42.4°), sin(42.4°)]
 
 ```text
 above_x = center_x + x_offset_mm
-above_y = center_y - 100 * sin(42.4°)
-above_z = center_z - 100 * cos(42.4°)
+above_y = center_y - 100 * sin(47.6°)
+above_z = center_z - 100 * cos(47.6°)
 ```
 
 如果之后要叠加平行地面的 5cm：
@@ -1008,7 +1008,7 @@ python3 scripts/cigarette_pose_above_center.py \
   --pretty
 ```
 
-如果只是想沿用之前的 `z*cos(42.4°)` 投影校验方式，也提供兼容模式：
+如果只是想沿用之前的 `z*cos(47.6°)` 投影校验方式，也提供兼容模式：
 
 ```bash
 python3 scripts/cigarette_pose_above_center.py \
@@ -1075,7 +1075,7 @@ robot_alignment.target.range_from_left_camera_mm
   左目光心到烟盒上表面中心点的直线距离。
 
 robot_alignment.target.ground_forward_mm
-  根据相机安装角 camera_to_vertical_deg，默认 42.4°，把中心点投影到地面前向后的距离。
+  根据相机安装角 camera_to_vertical_deg，默认 47.6°，把中心点投影到地面前向后的距离。
 
 robot_alignment.target.right_mm
   中心点相对左目 optical 原点向右的距离。正数表示目标在画面/机器人右侧。
