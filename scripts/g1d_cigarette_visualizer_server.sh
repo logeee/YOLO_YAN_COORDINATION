@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -eo pipefail
 
 cd "$(dirname "$0")/.."
 
@@ -7,10 +7,14 @@ for setup in /opt/ros/noetic/setup.bash /opt/ros/melodic/setup.bash; do
   if [ -f "$setup" ]; then
     # Needed when /api/robot_state reads ROS /joint_states through rostopic.
     # shellcheck disable=SC1090
+    set +u
     source "$setup"
+    set -u
     break
   fi
 done
+
+set -u
 
 exec "${PYTHON:-python3}" scripts/g1d_cigarette_visualizer_server.py \
   --bind "${VISUALIZER_BIND:-0.0.0.0}" \
