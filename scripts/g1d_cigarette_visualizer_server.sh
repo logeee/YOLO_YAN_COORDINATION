@@ -16,10 +16,18 @@ done
 
 set -u
 
+if [ -d "${UNITREE_SDK2PY_PATH:-/home/unitree/unitree_sdk2_python}" ]; then
+  export PYTHONPATH="${UNITREE_SDK2PY_PATH:-/home/unitree/unitree_sdk2_python}${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
 exec "${PYTHON:-python3}" scripts/g1d_cigarette_visualizer_server.py \
   --bind "${VISUALIZER_BIND:-0.0.0.0}" \
   --port "${VISUALIZER_PORT:-18085}" \
   --xyz-url "${VISUALIZER_XYZ_URL:-http://127.0.0.1:18081/xyz}" \
+  --dds-interface "${DDS_INTERFACE:-eth0}" \
+  --dds-lowstate-topic "${DDS_LOWSTATE_TOPIC:-rt/lowstate}" \
+  --dds-hispeed-topic "${DDS_HISPEED_TOPIC:-rt/hispeed_state}" \
+  --unitree-sdk2py-path "${UNITREE_SDK2PY_PATH:-/home/unitree/unitree_sdk2_python}" \
   --joint-states-topic "${JOINT_STATES_TOPIC:-/joint_states}" \
   --timeout-sec "${VISUALIZER_TIMEOUT_SEC:-2.0}" \
   "$@"

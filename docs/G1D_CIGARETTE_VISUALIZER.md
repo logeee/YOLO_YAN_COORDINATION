@@ -5,7 +5,7 @@
 核心原则：
 
 - 烟盒位置、方向、距离来自 YOLO `/xyz`。
-- 机器人模型姿态来自本体 `joint states`。
+- 机器人模型姿态来自本体 DDS 状态。
 - 可视化层只消费这两类数据，不重新做 YOLO 识别，也不重新算 PnP。
 
 ## 启动
@@ -69,7 +69,8 @@ YOLO `/xyz` 里会返回一个精简对象：
 
 | 字段 | 来源 | 用途 |
 | --- | --- | --- |
-| `joint states` | G1-D 本体 | 驱动 URDF 关节、立柱高度和姿态 |
+| DDS `rt/lowstate` | G1-D 本体 | 驱动腰部和手臂 URDF 关节 |
+| DDS `rt/hispeed_state` | G1-D 本体 | 驱动立柱高度 |
 | `g1d_visualization.metrics.turn_to_target_yaw_deg` | YOLO/PnP | 机器人朝目标中心需要转的角 |
 | `g1d_visualization.metrics.box_long_axis_yaw_deg` | YOLO/PnP | 烟盒长轴相对机器人前方的角 |
 | `g1d_visualization.metrics.center_vertical_down_mm` | YOLO/PnP | 地面垂直方向到烟盒上表面中心的距离 |
@@ -106,7 +107,30 @@ camera = head_link + camera_offset
 /api/robot_state
 ```
 
-默认返回展开立柱：
+机器人上默认优先读宇树 DDS：
+
+```text
+rt/lowstate        unitree_hg LowState，读取 motor_state[i].q
+rt/hispeed_state   geometry_msgs Point32，读取 y 作为立柱当前高度
+```
+
+服务启动参数：
+
+```bash
+bash scripts/g1d_cigarette_visualizer_server.sh
+```
+
+默认环境变量：
+
+```text
+PYTHON=/home/unitree/miniconda3/envs/tv/bin/python
+UNITREE_SDK2PY_PATH=/home/unitree/unitree_sdk2_python
+DDS_INTERFACE=eth0
+DDS_LOWSTATE_TOPIC=rt/lowstate
+DDS_HISPEED_TOPIC=rt/hispeed_state
+```
+
+如果 DDS 不可用，才返回默认展开立柱：
 
 ```json
 {
@@ -118,9 +142,19 @@ camera = head_link + camera_offset
 }
 ```
 
-后续如果有真实状态服务，可以让 `/api/robot_state` 返回同样格式。`joints` 里的单位是 URDF 单位：伸缩关节是米，旋转关节是弧度。前端会按 joint 名称驱动 URDF 模型变形。
+`joints` 里的单位是 URDF 单位：伸缩关节是米，旋转关节是弧度。前端会按 joint 名称驱动 URDF 模型变形。
 
-也兼容 ROS `JointState` 风格：
+DDS 到 URDF 的当前映射：
+
+```text
+lowstate[12] -> torso_Joint
+lowstate[14] -> Yaw_Joint
+lowstate[15:22] -> left shoulder/elbow/wrist
+lowstate[22:29] -> right shoulder/elbow/wrist
+hispeed_state.y -> LZ_mt_Joint + LZ_it_Joint
+```
+
+仍然兼容外部状态服务或 ROS `JointState` 风格：
 
 ```json
 {
