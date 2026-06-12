@@ -31,8 +31,8 @@ const dom = {
   fetchBtn: document.querySelector("#fetchBtn"),
   sampleBtn: document.querySelector("#sampleBtn"),
   applyBtn: document.querySelector("#applyBtn"),
+  normalViewBtn: document.querySelector("#normalViewBtn"),
   topViewBtn: document.querySelector("#topViewBtn"),
-  angledViewBtn: document.querySelector("#angledViewBtn"),
   sideViewBtn: document.querySelector("#sideViewBtn"),
   jsonInput: document.querySelector("#jsonInput"),
   metricLabel: document.querySelector("#metricLabel"),
@@ -46,9 +46,9 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0c1014);
 
 const camera = new THREE.PerspectiveCamera(48, 1, 0.01, 20);
-camera.position.set(0.24, 0.0, 2.4);
-camera.up.set(1, 0, 0);
-camera.lookAt(0.24, 0.0, 0.0);
+camera.position.set(1.35, -1.35, 0.92);
+camera.up.set(0, 0, 1);
+camera.lookAt(0.28, 0.0, 0.24);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -58,9 +58,11 @@ dom.viewport.appendChild(renderer.domElement);
 const stlLoader = new STLLoader();
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.target.set(0.24, 0.0, 0.0);
+controls.target.set(0.28, 0.0, 0.24);
 controls.enableDamping = true;
-controls.enableRotate = false;
+controls.enableRotate = true;
+controls.minDistance = 0.45;
+controls.maxDistance = 5.0;
 
 const root = new THREE.Group();
 scene.add(root);
@@ -94,7 +96,7 @@ addGround();
 addRobotAxes(root, 0.38);
 
 let currentPose = null;
-let currentView = "top";
+let currentView = "normal";
 let lastFocus = new THREE.Vector3(0.24, 0.0, 0.0);
 
 init();
@@ -110,8 +112,8 @@ function bindEvents() {
   dom.fetchBtn.addEventListener("click", fetchPose);
   dom.sampleBtn.addEventListener("click", loadSample);
   dom.applyBtn.addEventListener("click", applyJsonFromInput);
+  dom.normalViewBtn.addEventListener("click", () => setView("normal"));
   dom.topViewBtn.addEventListener("click", () => setView("top"));
-  dom.angledViewBtn.addEventListener("click", () => setView("angled"));
   dom.sideViewBtn.addEventListener("click", () => setView("side"));
   for (const input of [dom.thicknessMm, dom.cameraX, dom.cameraY, dom.cameraZ]) {
     input.addEventListener("input", () => {
@@ -729,27 +731,27 @@ function frameScene(target) {
 function setView(mode, immediate = true) {
   currentView = mode;
   const focus = lastFocus.clone();
-  const distance = Math.max(1.45, Math.hypot(focus.x, focus.y) * 3.4 + 1.25);
+  const spread = Math.max(1.0, Math.hypot(focus.x, focus.y) * 2.4 + 0.75);
   if (mode === "top") {
     camera.up.set(1, 0, 0);
-    camera.position.set(focus.x, focus.y, distance);
+    camera.position.set(focus.x, focus.y, Math.max(1.55, spread * 1.45));
     controls.target.copy(focus);
     controls.enableRotate = false;
   } else if (mode === "side") {
     camera.up.set(0, 0, 1);
-    camera.position.set(focus.x - 1.55, focus.y - 0.05, 0.92);
-    controls.target.set(focus.x, focus.y, 0.30);
+    camera.position.set(focus.x - spread * 1.25, focus.y - 0.06, 0.72);
+    controls.target.set(focus.x, focus.y, 0.28);
     controls.enableRotate = true;
   } else {
     camera.up.set(0, 0, 1);
-    camera.position.set(focus.x + 1.25, focus.y - 1.25, 1.25);
-    controls.target.set(focus.x, focus.y, 0.26);
+    camera.position.set(focus.x + spread * 0.88, focus.y - spread * 0.78, 0.78);
+    controls.target.set(focus.x + 0.08, focus.y, 0.20);
     controls.enableRotate = true;
   }
   camera.lookAt(controls.target);
   controls.update();
   if (immediate) {
-    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "斜视");
+    setStatus(mode === "top" ? "俯视地面" : mode === "side" ? "侧视" : "正常地面视角");
   }
 }
 
