@@ -64,6 +64,7 @@ RESULT_CACHE: dict[str, dict[str, Any]] = {}
 RESULT_CACHE_ORDER: list[str] = []
 RESULT_CACHE_LOCK = threading.Lock()
 MAX_CACHED_RESULTS = 20
+MODEL_CLASS_NAMES_CACHE: dict[str, list[str]] = {}
 G1D_ADJUST_URL = "http://127.0.0.1:18084/adjust"
 G1D_ADJUST_TIMEOUT_SEC = 45.0
 G1D_ADJUST_PROXY_TYPES: dict[str, type] = {
@@ -78,12 +79,6 @@ G1D_ADJUST_PROXY_TYPES: dict[str, type] = {
     "max_duration_sec": float,
     "dry_run": bool,
 }
-DEBUG_YOLO_LABEL_CHOICES: tuple[tuple[str, str], ...] = (
-    ("", "自动"),
-    ("XiongMao", "XiongMao"),
-    ("Xizi_Liqun", "Xizi_Liqun"),
-)
-
 OVERRIDE_TYPES: dict[str, type] = {
     "known_range_mm": float,
     "lens_glass_to_optical_center_mm": float,
@@ -301,6 +296,33 @@ def _get_image_client(host: str) -> Any:
 
         IMAGE_CLIENTS[host] = ImageClient(host=host)
     return IMAGE_CLIENTS[host]
+
+
+def _yolo_class_names(model_path: str | Path) -> list[str]:
+    resolved_model = resolve_model_path(model_path)
+    cache_key = str(resolved_model)
+    if cache_key in MODEL_CLASS_NAMES_CACHE:
+        return list(MODEL_CLASS_NAMES_CACHE[cache_key])
+    try:
+        model = get_yolo_model(resolved_model, task="segment")
+        names = getattr(model, "names", {}) or {}
+        if isinstance(names, dict):
+            def sort_key(item: Any) -> tuple[int, str]:
+                try:
+                    return (int(item), str(item))
+                except Exception:
+                    return (10_000, str(item))
+
+            class_names = [str(names[key]) for key in sorted(names, key=sort_key)]
+        elif isinstance(names, (list, tuple)):
+            class_names = [str(item) for item in names]
+        else:
+            class_names = []
+    except Exception:
+        class_names = []
+    class_names = [name for name in class_names if name]
+    MODEL_CLASS_NAMES_CACHE[cache_key] = class_names
+    return list(class_names)
 
 
 def _capture_head_images_persistent(host: str, wait_sec: float) -> tuple[np.ndarray, np.ndarray]:
@@ -541,12 +563,16 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
         args = _build_pose_args(config, out_dir, left_path, right_path, overrides)
         result, exit_code = run_pose(args)
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+    requested_label = overrides.get("label") or overrides.get("yolo_label") or overrides.get("yolo_class_name")
+    if requested_label and not result.get("requested_yolo_label"):
+        result["requested_yolo_label"] = str(requested_label)
     server_info = {
         "resident": True,
         "pid": os.getpid(),
         "request_id": request_id,
         "elapsed_ms": elapsed_ms,
         "model_cache_size": len(YOLO_MODEL_CACHE),
+        "yolo_class_names": _yolo_class_names(config.yolo_model),
     }
     result["server"] = server_info
     result["g1d_visualization"] = _g1d_visualization_data(result)
@@ -1195,11 +1221,17 @@ def _embedded_g1d_visualizer_html(payload: dict[str, Any]) -> str:
         const payloadEl = document.getElementById("g1dCurrentPosePayload");
         if (!frame || !payloadEl) return;
         const visualizerOrigin = `${{window.location.protocol}}//${{window.location.hostname}}:18085`;
-        const payload = JSON.parse(payloadEl.textContent || "{{}}");
+        let payload = JSON.parse(payloadEl.textContent || "{{}}");
         frame.src = `${{visualizerOrigin}}/?compact=1&embedded=1&no_fetch=1&view=normal&t=${{Date.now()}}`;
         const postPayload = () => {{
           if (!frame.contentWindow) return;
           frame.contentWindow.postMessage({{ type: "g1d-visualizer-pose", pose: payload }}, visualizerOrigin);
+        }};
+        window.updateG1dVisualizer = (nextPayload) => {{
+          payload = nextPayload || {{}};
+          payloadEl.textContent = JSON.stringify(payload);
+          postPayload();
+          setTimeout(postPayload, 350);
         }};
         frame.addEventListener("load", () => {{
           postPayload();
@@ -1218,36 +1250,29 @@ def _embedded_g1d_visualizer_html(payload: dict[str, Any]) -> str:
 """
 
 
-def _debug_label_controls_html(payload: dict[str, Any]) -> str:
+def _debug_label_select_html(payload: dict[str, Any]) -> str:
     requested_label = str(payload.get("requested_yolo_label") or "")
-    selected_label = str(payload.get("selected_yolo_label") or "")
+    model_class_names = _nested(payload, "server", "yolo_class_names")
+    if not isinstance(model_class_names, list):
+        model_class_names = []
+    labels = [str(item) for item in model_class_names if str(item)]
+    if requested_label and requested_label not in labels:
+        labels.append(requested_label)
+    label_choices = [("", "自动"), *[(label, label) for label in labels]]
+
     options = []
-    for value, text in DEBUG_YOLO_LABEL_CHOICES:
+    for value, text in label_choices:
         selected = " selected" if value == requested_label else ""
         options.append(
             f'<option value="{html_lib.escape(value, quote=True)}"{selected}>{html_lib.escape(text)}</option>'
         )
-    mode_text = "自动：使用置信度最高的候选" if not requested_label else f"当前只计算：{requested_label}"
-    selected_text = selected_label or "-"
     return f"""
-  <section class="debug-label-panel">
-    <form id="debugLabelForm" action="/debug" method="get">
-      <label for="debugLabelSelect">烟盒类别</label>
+    <label class="debug-label-control" for="debugLabelSelect">
+      <span>烟盒类别</span>
       <select id="debugLabelSelect" name="label">
         {''.join(options)}
       </select>
-      <button class="button" type="submit">应用</button>
-      <span>{html_lib.escape(mode_text)}；本次选中：{html_lib.escape(selected_text)}</span>
-    </form>
-    <script>
-      (() => {{
-        const select = document.getElementById("debugLabelSelect");
-        const form = document.getElementById("debugLabelForm");
-        if (!select || !form) return;
-        select.addEventListener("change", () => form.submit());
-      }})();
-    </script>
-  </section>
+    </label>
 """
 
 
@@ -1259,7 +1284,7 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
   <section class="g1d-adjust-panel">
     <div class="g1d-adjust-title">
       <h2>G1-D 位置微调</h2>
-      <span>当前烟盒类别：{selected_label_text}</span>
+      <span>当前烟盒类别：<span id="g1dAdjustCurrentLabel">{selected_label_text}</span></span>
     </div>
     <div class="g1d-adjust-actions">
       <button id="g1dAdjustBtn" class="button primary-button" type="button">执行位置微调</button>
@@ -1271,11 +1296,16 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
         const adjustBtn = document.getElementById("g1dAdjustBtn");
         const dryRunBtn = document.getElementById("g1dAdjustDryRunBtn");
         const statusEl = document.getElementById("g1dAdjustStatus");
-        const selectedLabel = {selected_label_json};
+        const initialSelectedLabel = {selected_label_json};
+        const currentSelectedLabel = () => {{
+          const select = document.getElementById("debugLabelSelect");
+          return select ? select.value : initialSelectedLabel;
+        }};
         const setStatus = (text) => {{
           if (statusEl) statusEl.textContent = text;
         }};
         const runAdjust = async (dryRun) => {{
+          const selectedLabel = currentSelectedLabel();
           const labelQuery = selectedLabel ? `&label=${{encodeURIComponent(selectedLabel)}}` : "";
           const url = `/g1d/adjust?dry_run=${{dryRun ? "1" : "0"}}${{labelQuery}}&t=${{Date.now()}}`;
           const button = dryRun ? dryRunBtn : adjustBtn;
@@ -1362,11 +1392,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .button:disabled {{ color: #829ab1; cursor: wait; }}
     .primary-button {{ background: #1266f1; border-color: #1266f1; color: #fff; }}
     .status {{ margin: 12px 0; }}
-    .debug-label-panel {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; margin: 12px 0 16px; background: #fff; }}
-    .debug-label-panel form {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
-    .debug-label-panel label {{ color: #243b53; font-weight: 700; }}
-    .debug-label-panel select {{ padding: 7px 9px; border: 1px solid #8795a1; font: inherit; background: #fff; }}
-    .debug-label-panel span {{ color: #627d98; font-size: 13px; }}
+    .debug-label-control {{ display: inline-flex; align-items: center; gap: 6px; color: #243b53; font-weight: 700; }}
+    .debug-label-control select {{ padding: 7px 9px; border: 1px solid #8795a1; font: inherit; background: #fff; }}
     .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 18px; }}
     .summary-tile {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; min-height: 76px; }}
     .summary-label {{ color: #52606d; font-size: 13px; margin-bottom: 6px; }}
@@ -1397,30 +1424,89 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
 <body>
   <header>
     <h1>烟盒 YOLO 调试</h1>
-    <a class="button" href="{run_again_href}">重新拍照</a>
-    <a class="button" href="{pose_href}">完整 JSON</a>
-    <a class="button" href="{xyz_href}">坐标 JSON</a>
+    {_debug_label_select_html(payload)}
+    <a id="debugRunAgainLink" class="button" href="{run_again_href}">重新拍照</a>
+    <a id="debugPoseLink" class="button" href="{pose_href}">完整 JSON</a>
+    <a id="debugXyzLink" class="button" href="{xyz_href}">坐标 JSON</a>
   </header>
-  <div class="status">{status_line}</div>
-  {_debug_label_controls_html(payload)}
+  <script>
+    (() => {{
+      const select = document.getElementById("debugLabelSelect");
+      const runAgain = document.getElementById("debugRunAgainLink");
+      const pose = document.getElementById("debugPoseLink");
+      const xyz = document.getElementById("debugXyzLink");
+      const updateLinks = () => {{
+        const label = select && select.value ? `label=${{encodeURIComponent(select.value)}}&` : "";
+        const adjustLabel = document.getElementById("g1dAdjustCurrentLabel");
+        if (adjustLabel) adjustLabel.textContent = select && select.value ? select.value : "自动";
+        const t = Date.now();
+        if (runAgain) runAgain.href = `/debug?${{label}}t=${{t}}`;
+        if (pose) pose.href = `/pose?${{label}}t=${{t}}`;
+        if (xyz) xyz.href = `/xyz?${{label}}t=${{t}}`;
+      }};
+      const copyHtml = (doc, id) => {{
+        const current = document.getElementById(id);
+        const next = doc.getElementById(id);
+        if (current && next) current.innerHTML = next.innerHTML;
+      }};
+      const runDebugRequest = async (event) => {{
+        event.preventDefault();
+        updateLinks();
+        if (runAgain) runAgain.textContent = "请求中...";
+        try {{
+          const res = await fetch(runAgain.href, {{ cache: "no-store" }});
+          const html = await res.text();
+          const doc = new DOMParser().parseFromString(html, "text/html");
+          for (const id of [
+            "debugStatus",
+            "debugKeySummary",
+            "debugImageGrid",
+            "debugHypotheses",
+            "debugVisualizationData",
+            "debugSelectedCandidate",
+            "debugLeftCandidates",
+            "debugRightCandidates",
+            "debugJson",
+          ]) {{
+            copyHtml(doc, id);
+          }}
+          const nextPayloadEl = doc.getElementById("g1dCurrentPosePayload");
+          if (nextPayloadEl && window.updateG1dVisualizer) {{
+            window.updateG1dVisualizer(JSON.parse(nextPayloadEl.textContent || "{{}}"));
+          }}
+          window.history.replaceState(null, "", runAgain.href);
+        }} catch (err) {{
+          const status = document.getElementById("debugStatus");
+          if (status) status.textContent = `重新拍照请求失败: ${{err}}`;
+        }} finally {{
+          if (runAgain) runAgain.textContent = "重新拍照";
+          updateLinks();
+        }}
+      }};
+      if (select) select.addEventListener("change", updateLinks);
+      if (runAgain) runAgain.addEventListener("click", runDebugRequest);
+      updateLinks();
+    }})();
+  </script>
+  <div id="debugStatus" class="status">{status_line}</div>
   <h2>关键数据</h2>
-  {_key_summary_html(payload)}
+  <div id="debugKeySummary">{_key_summary_html(payload)}</div>
   {_g1d_adjust_controls_html(payload)}
   <h2>图片显示</h2>
-  <div class="grid">{image_cards}</div>
+  <div id="debugImageGrid" class="grid">{image_cards}</div>
   {_embedded_g1d_visualizer_html(payload)}
   <h2>横竖两套假设对比</h2>
-  {_alignment_hypotheses_table(payload)}
+  <div id="debugHypotheses">{_alignment_hypotheses_table(payload)}</div>
   <h2>G1-D 可视化需要的数据</h2>
-  {_g1d_visualization_table(payload)}
+  <div id="debugVisualizationData">{_g1d_visualization_table(payload)}</div>
   <h2>当前选中的左目候选</h2>
-  <pre>{selected_text}</pre>
+  <pre id="debugSelectedCandidate">{selected_text}</pre>
   <h2>左目 YOLO 候选</h2>
-  {_candidate_table(left_candidates)}
+  <div id="debugLeftCandidates">{_candidate_table(left_candidates)}</div>
   <h2>右目 YOLO 候选</h2>
-  {_candidate_table(right_candidates)}
+  <div id="debugRightCandidates">{_candidate_table(right_candidates)}</div>
   <h2>完整 JSON</h2>
-  <pre>{json_text}</pre>
+  <pre id="debugJson">{json_text}</pre>
 </body>
 </html>
 """
@@ -1456,6 +1542,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "yolo_model": config.yolo_model,
         "requested_device": config.yolo_device,
         "resolved_device": resolved_device,
+        "yolo_class_names": _yolo_class_names(config.yolo_model),
         "cuda_available": cuda_available,
         "torch_cuda": torch_cuda,
         "model_cache_size": len(YOLO_MODEL_CACHE),
