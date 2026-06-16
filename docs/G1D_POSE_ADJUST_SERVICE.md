@@ -48,7 +48,7 @@ curl -s "http://127.0.0.1:18084/adjust_right_entry"
 
 这个版本和旧 `/adjust` 分开。它是一个确定性的三阶段规则：
 
-- 第一阶段复用 `/adjust`，但目标近端边前向距离改成 `300mm`，给后续侧移留安全空间。
+- 第一阶段复用 `/adjust`，但目标近端边前向距离改成 `400mm`，给后续侧移留安全空间。
 - 第二阶段重新读取 YOLO，左转 `90° + 当前烟盒长轴残余角`，再通过 `forward/back` 产生等效横向位移，然后转回原操作朝向。
 - 第三阶段再次读取 YOLO，复用 `/adjust` 收敛到最终近端边前向 `200mm`。
 - 默认把烟盒中心放到机器人右侧 `200mm`，可以用 `right_entry_target_right_mm` 临时修改。
@@ -116,7 +116,7 @@ executions[].ok                        每条 SDK 命令是否成功
 右手侧安全入位还会返回：
 
 ```text
-right_entry_targets.prealign_near_edge_forward_mm        第一阶段目标，默认 300mm
+right_entry_targets.prealign_near_edge_forward_mm        第一阶段目标，默认 400mm
 right_entry_targets.final_near_edge_forward_mm           最终目标，默认 200mm
 right_entry_targets.center_right_mm                      右手侧横向目标，默认 200mm
 stages[].stage                                           当前阶段

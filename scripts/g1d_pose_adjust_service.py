@@ -37,7 +37,7 @@ class AdjustConfig:
     target_turn_to_target_yaw_deg: float = 30.0
     target_turn_tolerance_deg: float = 3.0
     planner_turn_step_deg: float = 1.0
-    right_entry_prealign_forward_mm: float = 300.0
+    right_entry_prealign_forward_mm: float = 400.0
     right_entry_final_forward_mm: float = 200.0
     right_entry_target_right_mm: float = 200.0
     right_entry_lateral_tolerance_mm: float = 15.0
@@ -1047,7 +1047,7 @@ def run_right_entry_adjust_sequence(config: AdjustConfig, values: dict[str, Any]
         return bool(plan.get("ok")) and _commands_ok(commands, executions, dry_run)
 
     prealign_config = replace(config, target_near_edge_forward_mm=float(config.right_entry_prealign_forward_mm))
-    if not add_single_adjust_stage("safe_prealign_to_300mm", prealign_config):
+    if not add_single_adjust_stage("safe_prealign_to_target", prealign_config):
         return finish(False, "safe pre-align failed")
 
     if dry_run:
@@ -1097,7 +1097,7 @@ def run_right_entry_adjust_sequence(config: AdjustConfig, values: dict[str, Any]
     return finish(
         True,
         note=(
-            "Right-hand safe entry uses fresh YOLO before each major stage: pre-align to 300mm, "
+            "Right-hand safe entry uses fresh YOLO before each major stage: pre-align to 400mm, "
             "pseudo-lateral side shift, then final 200mm operation adjust."
         ),
     )
@@ -1276,7 +1276,7 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                             "label_usage": "pass ?label=XiongMao or ?label=Xizi_Liqun to make YOLO select that class before adjustment",
                             "streaming": "/adjust?stream=1 returns NDJSON progress events",
                             "target_angle_rule": "use /adjust_target_angle to prefer turn_to_target_yaw_deg=30deg while keeping box yaw and near-edge distance controlled",
-                            "right_entry_rule": "use /adjust_right_entry for right-hand safe entry: pre-align to 300mm, refetch YOLO, side-shift, refetch YOLO, final adjust to 200mm",
+                            "right_entry_rule": "use /adjust_right_entry for right-hand safe entry: pre-align to 400mm, refetch YOLO, side-shift, refetch YOLO, final adjust to 200mm",
                             "safety": "/plan, /plan_target_angle, /plan_right_entry, and dry_run=1 never move the robot",
                         },
                     )
@@ -1381,7 +1381,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-turn-to-target-yaw-deg", type=float, default=30.0)
     parser.add_argument("--target-turn-tolerance-deg", type=float, default=3.0)
     parser.add_argument("--planner-turn-step-deg", type=float, default=1.0)
-    parser.add_argument("--right-entry-prealign-forward-mm", type=float, default=300.0)
+    parser.add_argument("--right-entry-prealign-forward-mm", type=float, default=400.0)
     parser.add_argument("--right-entry-final-forward-mm", type=float, default=200.0)
     parser.add_argument("--right-entry-target-right-mm", type=float, default=200.0)
     parser.add_argument("--right-entry-lateral-tolerance-mm", type=float, default=15.0)

@@ -433,7 +433,7 @@ curl -s http://127.0.0.1:18084/adjust
 curl -s http://192.168.0.149:18084/adjust
 ```
 
-右手侧安全入位，会按三步执行：先安全预对齐到 300mm，再重新 YOLO 后做 90° 伪横向调整，最后重新 YOLO 并收敛到 200mm：
+右手侧安全入位，会按三步执行：先安全预对齐到 400mm，再重新 YOLO 后做 90° 伪横向调整，最后重新 YOLO 并收敛到 200mm：
 
 ```bash
 curl -s "http://127.0.0.1:18084/adjust_right_entry?dry_run=1"
@@ -441,7 +441,7 @@ curl -s "http://127.0.0.1:18084/adjust_right_entry"
 curl -s "http://127.0.0.1:18084/adjust_right_entry?label=XiongMao"
 ```
 
-默认参数：预对齐近端边前向 `300mm`，最终近端边前向 `200mm`，烟盒中心目标在机器人右侧 `200mm`。右侧目标可临时修改：
+默认参数：预对齐近端边前向 `400mm`，最终近端边前向 `200mm`，烟盒中心目标在机器人右侧 `200mm`。右侧目标可临时修改：
 
 ```bash
 curl -s "http://127.0.0.1:18084/adjust_right_entry?right_entry_target_right_mm=220"
