@@ -515,4 +515,4 @@ cigarette-pose-yolo.service
 g1d-cigarette-visualizer.service
 g1d-pose-adjust.service
 ```
-这三个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。当前这台环境是 Windows 工作区，不能实际跑 systemctl 到机器人上。
+这三个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。
