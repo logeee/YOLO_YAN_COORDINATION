@@ -314,11 +314,23 @@ def detect_yolo_points_from_image(
     for candidate_index, record in enumerate(ordered_records):
         record["info"]["candidate_index"] = int(candidate_index)
         record["info"]["selection_method"] = select
+        record["info"]["matches_label_filter"] = True
     if select_index < 0 or select_index >= len(ordered_records):
         raise RuntimeError(
             f"YOLO candidate index {select_index} out of range for {len(ordered_records)} candidates "
             f"after --yolo-select {select}"
         )
+
+    selected_record_ids = {id(record) for record in ordered_records}
+    ordered_filtered_out_records = _sort_candidate_records(filtered_out_records, select, image.shape)
+    all_display_records = [*ordered_records, *ordered_filtered_out_records]
+    for candidate_index, record in enumerate(all_display_records):
+        record["info"]["candidate_index"] = int(candidate_index)
+        record["info"]["selection_method"] = select
+        matches_label_filter = id(record) in selected_record_ids
+        record["info"]["matches_label_filter"] = matches_label_filter
+        if not matches_label_filter:
+            record["info"]["filtered_out_by_label"] = True
 
     selected_record = ordered_records[int(select_index)]
     selected_info = dict(selected_record["info"])
@@ -330,7 +342,7 @@ def detect_yolo_points_from_image(
             "candidate_count": len(ordered_records),
             "label_filter": str(label_filter) if label_filter else None,
             "filtered_out_candidate_count": len(filtered_out_records),
-            "candidates": [dict(record["info"]) for record in ordered_records],
+            "candidates": [dict(record["info"]) for record in all_display_records],
             "all_candidate_labels": sorted(
                 {
                     str(record["info"].get("class_name"))

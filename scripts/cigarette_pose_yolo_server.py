@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
+import urllib.error
+import urllib.request
 
 import cv2
 import numpy as np
@@ -44,7 +46,7 @@ class ServerConfig:
     bind: str = "127.0.0.1"
     port: int = 18081
     out_root: Path = Path("/tmp/cigarette_pose_yolo_server")
-    yolo_model: str = "models/Liqun_Xiongmao.pt"
+    yolo_model: str = "models/cigarette_yolo11m.pt"
     yolo_device: str = "cuda:0"
     yolo_conf: float = 0.15
     yolo_imgsz: int = 640
@@ -62,6 +64,25 @@ RESULT_CACHE: dict[str, dict[str, Any]] = {}
 RESULT_CACHE_ORDER: list[str] = []
 RESULT_CACHE_LOCK = threading.Lock()
 MAX_CACHED_RESULTS = 20
+G1D_ADJUST_URL = "http://127.0.0.1:18084/adjust"
+G1D_ADJUST_TIMEOUT_SEC = 45.0
+G1D_ADJUST_PROXY_TYPES: dict[str, type] = {
+    "label": str,
+    "yolo_label": str,
+    "target_near_edge_forward_mm": float,
+    "yaw_tolerance_deg": float,
+    "distance_tolerance_mm": float,
+    "turn_speed": float,
+    "drive_speed": float,
+    "min_duration_sec": float,
+    "max_duration_sec": float,
+    "dry_run": bool,
+}
+DEBUG_YOLO_LABEL_CHOICES: tuple[tuple[str, str], ...] = (
+    ("", "自动"),
+    ("XiongMao", "XiongMao"),
+    ("Xizi_Liqun", "Xizi_Liqun"),
+)
 
 OVERRIDE_TYPES: dict[str, type] = {
     "known_range_mm": float,
@@ -201,6 +222,68 @@ def _request_overrides(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             if normalized in OVERRIDE_TYPES:
                 values[normalized] = _coerce_override(normalized, value)
     return values
+
+
+def _coerce_g1d_adjust_value(name: str, value: Any) -> Any:
+    target_type = G1D_ADJUST_PROXY_TYPES[name]
+    if target_type is bool:
+        return _parse_bool(value)
+    return target_type(value)
+
+
+def _g1d_adjust_values(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    parsed = urlparse(handler.path)
+    values: dict[str, Any] = {}
+    for key, raw_values in parse_qs(parsed.query).items():
+        normalized = key.replace("-", "_")
+        if normalized in G1D_ADJUST_PROXY_TYPES and raw_values:
+            values[normalized] = _coerce_g1d_adjust_value(normalized, raw_values[-1])
+
+    length = int(handler.headers.get("Content-Length") or 0)
+    if length > 0:
+        body = handler.rfile.read(length)
+        data = json.loads(body.decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("request JSON body must be an object")
+        for key, value in data.items():
+            normalized = key.replace("-", "_")
+            if normalized in G1D_ADJUST_PROXY_TYPES:
+                values[normalized] = _coerce_g1d_adjust_value(normalized, value)
+    return values
+
+
+def _serve_g1d_adjust(handler: BaseHTTPRequestHandler) -> None:
+    values = _g1d_adjust_values(handler)
+    query = urlencode({key: value for key, value in values.items() if value is not None})
+    request_url = G1D_ADJUST_URL if not query else f"{G1D_ADJUST_URL}?{query}"
+    try:
+        with urllib.request.urlopen(request_url, timeout=G1D_ADJUST_TIMEOUT_SEC) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+            status = 200 if bool(payload.get("ok")) else 500
+            payload.setdefault("proxy", {})
+            if isinstance(payload["proxy"], dict):
+                payload["proxy"].update({"ok": True, "url": request_url})
+            _json_response(handler, status, payload)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = {"ok": False, "error": body or str(exc)}
+        payload.setdefault("proxy", {})
+        if isinstance(payload["proxy"], dict):
+            payload["proxy"].update({"ok": False, "url": request_url, "http_status": exc.code})
+        _json_response(handler, exc.code, payload)
+    except Exception as exc:
+        _json_response(
+            handler,
+            502,
+            {
+                "ok": False,
+                "error": f"failed to call G1D adjust service: {exc}",
+                "proxy": {"ok": False, "url": request_url},
+            },
+        )
 
 
 def _append_arg(argv: list[str], name: str, value: Any) -> None:
@@ -817,6 +900,7 @@ def _candidate_table(candidates: Any) -> str:
             f"<td>{html_lib.escape(str(item.get('class_name')))}</td>"
             f"<td>{html_lib.escape(str(item.get('confidence')))}</td>"
             f"<td>{html_lib.escape(str(item.get('score')))}</td>"
+            f"<td>{html_lib.escape('是' if item.get('matches_label_filter', True) else '否')}</td>"
             f"<td>{html_lib.escape(str(item.get('mask_area_px')))}</td>"
             f"<td>{html_lib.escape(str(item.get('box_xyxy')))}</td>"
             f"<td>{html_lib.escape(str(item.get('points_px')))}</td>"
@@ -825,7 +909,7 @@ def _candidate_table(candidates: Any) -> str:
     return (
         "<table>"
         "<thead><tr><th>候选序号</th><th>YOLO 原序号</th><th>类别</th><th>置信度</th><th>评分</th>"
-        "<th>mask面积</th><th>检测框</th><th>四点像素</th></tr></thead>"
+        "<th>参与当前类别</th><th>mask面积</th><th>检测框</th><th>四点像素</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table>"
     )
 
@@ -1134,6 +1218,92 @@ def _embedded_g1d_visualizer_html(payload: dict[str, Any]) -> str:
 """
 
 
+def _debug_label_controls_html(payload: dict[str, Any]) -> str:
+    requested_label = str(payload.get("requested_yolo_label") or "")
+    selected_label = str(payload.get("selected_yolo_label") or "")
+    options = []
+    for value, text in DEBUG_YOLO_LABEL_CHOICES:
+        selected = " selected" if value == requested_label else ""
+        options.append(
+            f'<option value="{html_lib.escape(value, quote=True)}"{selected}>{html_lib.escape(text)}</option>'
+        )
+    mode_text = "自动：使用置信度最高的候选" if not requested_label else f"当前只计算：{requested_label}"
+    selected_text = selected_label or "-"
+    return f"""
+  <section class="debug-label-panel">
+    <form id="debugLabelForm" action="/debug" method="get">
+      <label for="debugLabelSelect">烟盒类别</label>
+      <select id="debugLabelSelect" name="label">
+        {''.join(options)}
+      </select>
+      <button class="button" type="submit">应用</button>
+      <span>{html_lib.escape(mode_text)}；本次选中：{html_lib.escape(selected_text)}</span>
+    </form>
+    <script>
+      (() => {{
+        const select = document.getElementById("debugLabelSelect");
+        const form = document.getElementById("debugLabelForm");
+        if (!select || !form) return;
+        select.addEventListener("change", () => form.submit());
+      }})();
+    </script>
+  </section>
+"""
+
+
+def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
+    requested_label = str(payload.get("requested_yolo_label") or "")
+    selected_label_text = html_lib.escape(requested_label or "自动")
+    selected_label_json = json.dumps(requested_label, ensure_ascii=False).replace("</", "<\\/")
+    return f"""
+  <section class="g1d-adjust-panel">
+    <div class="g1d-adjust-title">
+      <h2>G1-D 位置微调</h2>
+      <span>当前烟盒类别：{selected_label_text}</span>
+    </div>
+    <div class="g1d-adjust-actions">
+      <button id="g1dAdjustBtn" class="button primary-button" type="button">执行位置微调</button>
+      <button id="g1dAdjustDryRunBtn" class="button" type="button">预览微调计划</button>
+    </div>
+    <pre id="g1dAdjustStatus" class="g1d-adjust-status">等待操作</pre>
+    <script>
+      (() => {{
+        const adjustBtn = document.getElementById("g1dAdjustBtn");
+        const dryRunBtn = document.getElementById("g1dAdjustDryRunBtn");
+        const statusEl = document.getElementById("g1dAdjustStatus");
+        const selectedLabel = {selected_label_json};
+        const setStatus = (text) => {{
+          if (statusEl) statusEl.textContent = text;
+        }};
+        const runAdjust = async (dryRun) => {{
+          const labelQuery = selectedLabel ? `&label=${{encodeURIComponent(selectedLabel)}}` : "";
+          const url = `/g1d/adjust?dry_run=${{dryRun ? "1" : "0"}}${{labelQuery}}&t=${{Date.now()}}`;
+          const button = dryRun ? dryRunBtn : adjustBtn;
+          if (button) button.disabled = true;
+          setStatus(dryRun ? "正在读取 YOLO 并生成微调计划..." : "正在执行 G1-D 位置微调，请等待...");
+          try {{
+            const res = await fetch(url, {{ method: "POST", cache: "no-store" }});
+            const payload = await res.json();
+            setStatus(JSON.stringify(payload, null, 2));
+            if (!dryRun && payload.ok) {{
+              setStatus("微调完成，正在重新拍照刷新 YOLO...");
+              const refreshLabelQuery = selectedLabel ? `label=${{encodeURIComponent(selectedLabel)}}&` : "";
+              window.location.href = `/debug?${{refreshLabelQuery}}t=${{Date.now()}}`;
+            }}
+          }} catch (err) {{
+            setStatus(`微调请求失败: ${{err}}`);
+          }} finally {{
+            if (button) button.disabled = false;
+          }}
+        }};
+        if (adjustBtn) adjustBtn.addEventListener("click", () => runAdjust(false));
+        if (dryRunBtn) dryRunBtn.addEventListener("click", () => runAdjust(true));
+      }})();
+    </script>
+  </section>
+"""
+
+
 def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     point_adjustments = payload.get("point_adjustments") if isinstance(payload, dict) else {}
     if not isinstance(point_adjustments, dict):
@@ -1152,6 +1322,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     request_id = html_lib.escape(request_id_raw)
     elapsed_ms = html_lib.escape(str(server.get("elapsed_ms") or ""))
     cache_token = quote(f"{request_id_raw}_{time.time_ns()}")
+    requested_label_raw = str(payload.get("requested_yolo_label") or "")
+    label_query = f"label={quote(requested_label_raw)}&" if requested_label_raw else ""
     if request_id_raw:
         image_query = f"?request_id={quote(request_id_raw)}&t={cache_token}"
     else:
@@ -1172,7 +1344,9 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
             f'<section><h2>右目全部候选</h2><img src="{image_src("/latest/right_candidates.jpg")}" alt="right candidates"></section>',
         ]
     )
-    run_again_href = html_lib.escape(f"/debug?t={cache_token}")
+    run_again_href = html_lib.escape(f"/debug?{label_query}t={cache_token}")
+    pose_href = html_lib.escape(f"/pose?{label_query}t={cache_token}")
+    xyz_href = html_lib.escape(f"/xyz?{label_query}t={cache_token}")
     status_line = html_lib.escape(
         f"状态={ok_text} 请求={request_id} 耗时={elapsed_ms}ms 错误={_error_cn(payload.get('error'))}"
     )
@@ -1184,8 +1358,15 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
   <style>
     body {{ font-family: Arial, sans-serif; margin: 18px; color: #1f2933; }}
     header {{ display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap; }}
-    a.button {{ display: inline-block; padding: 7px 10px; border: 1px solid #8795a1; color: #102a43; text-decoration: none; }}
+    .button {{ display: inline-block; padding: 7px 10px; border: 1px solid #8795a1; color: #102a43; text-decoration: none; background: #fff; font: inherit; cursor: pointer; }}
+    .button:disabled {{ color: #829ab1; cursor: wait; }}
+    .primary-button {{ background: #1266f1; border-color: #1266f1; color: #fff; }}
     .status {{ margin: 12px 0; }}
+    .debug-label-panel {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; margin: 12px 0 16px; background: #fff; }}
+    .debug-label-panel form {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
+    .debug-label-panel label {{ color: #243b53; font-weight: 700; }}
+    .debug-label-panel select {{ padding: 7px 9px; border: 1px solid #8795a1; font: inherit; background: #fff; }}
+    .debug-label-panel span {{ color: #627d98; font-size: 13px; }}
     .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 18px; }}
     .summary-tile {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; min-height: 76px; }}
     .summary-label {{ color: #52606d; font-size: 13px; margin-bottom: 6px; }}
@@ -1201,6 +1382,12 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .g1d-visualizer-title h2 {{ margin: 0; }}
     .g1d-visualizer-title span {{ color: #627d98; font-size: 13px; }}
     .g1d-visualizer-frame {{ width: 100%; height: 560px; border: 0; border-radius: 6px; display: block; background: #0c1014; }}
+    .g1d-adjust-panel {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; margin: 14px 0 18px; background: #f8fbff; }}
+    .g1d-adjust-title {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }}
+    .g1d-adjust-title h2 {{ margin: 0; }}
+    .g1d-adjust-title span {{ color: #627d98; font-size: 13px; }}
+    .g1d-adjust-actions {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }}
+    .g1d-adjust-status {{ margin: 0; max-height: 260px; }}
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
     th, td {{ border: 1px solid #d9e2ec; padding: 5px; vertical-align: top; }}
     th {{ background: #f0f4f8; }}
@@ -1211,12 +1398,14 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
   <header>
     <h1>烟盒 YOLO 调试</h1>
     <a class="button" href="{run_again_href}">重新拍照</a>
-    <a class="button" href="/pose">完整 JSON</a>
-    <a class="button" href="/xyz">坐标 JSON</a>
+    <a class="button" href="{pose_href}">完整 JSON</a>
+    <a class="button" href="{xyz_href}">坐标 JSON</a>
   </header>
   <div class="status">{status_line}</div>
+  {_debug_label_controls_html(payload)}
   <h2>关键数据</h2>
   {_key_summary_html(payload)}
+  {_g1d_adjust_controls_html(payload)}
   <h2>图片显示</h2>
   <div class="grid">{image_cards}</div>
   {_embedded_g1d_visualizer_html(payload)}
@@ -1291,6 +1480,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/latest/left_projected.jpg",
             "/latest/left_projected_zoom.jpg",
             "/debug",
+            "/g1d/adjust",
         ],
     }
 
@@ -1337,6 +1527,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 if path == "/health":
                     _json_response(self, 200, _health_payload(config))
                     return
+                if path == "/g1d/adjust":
+                    _serve_g1d_adjust(self)
+                    return
                 if path in DEBUG_IMAGE_KEYS:
                     overrides = _request_overrides(self)
                     _serve_debug_image(self, config, path, overrides)
@@ -1370,8 +1563,9 @@ def build_arg_parser_server() -> argparse.ArgumentParser:
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18081)
     parser.add_argument("--out-root", type=Path, default=Path("/tmp/cigarette_pose_yolo_server"))
-    parser.add_argument("--yolo-model", default="models/Liqun_Xiongmao.pt")
+    parser.add_argument("--yolo-model", default="models/cigarette_yolo11m.pt")
     parser.add_argument("--yolo-device", default="cuda:0")
+    # parser.add_argument("--yolo-device", default="auto")
     parser.add_argument("--yolo-conf", type=float, default=0.15)
     parser.add_argument("--yolo-imgsz", type=int, default=640)
     parser.add_argument("--yolo-mask-threshold", type=float, default=0.5)

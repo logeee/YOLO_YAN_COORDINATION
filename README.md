@@ -525,3 +525,35 @@ g1d-cigarette-visualizer.service
 g1d-pose-adjust.service
 ```
 这三个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。
+
+# 模型
+```json
+{
+    "labels": [
+        {
+            "class_id": 5,
+            "name": "XiongMao"
+        },
+        {
+            "class_id": 1,
+            "name": "Xizi_Liqun"
+        },
+        {
+            "class_id": 0,
+            "name": "BaiYan"
+        },
+        {
+            "class_id": 2,
+            "name": "LiQunYangGuangZunZhongZhi"
+        },
+        {
+            "class_id": 3,
+            "name": "YangGuangLiQun"
+        },
+        {
+            "class_id": 4,
+            "name": "HuangShan"
+        }
+    ]
+}
+```
