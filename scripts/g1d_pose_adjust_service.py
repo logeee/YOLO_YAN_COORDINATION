@@ -137,12 +137,30 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
     return replace(config, **updates)
 
 
+def _requested_yolo_label(values: dict[str, Any]) -> str | None:
+    label = values.get("label") or values.get("yolo_label")
+    if label is None:
+        return None
+    label = str(label).strip()
+    return label or None
+
+
+def _label_matches(requested_label: str | None, selected_label: Any) -> bool:
+    if not requested_label:
+        return True
+    if selected_label is None:
+        return False
+    requested = str(requested_label).strip().lower()
+    selected = str(selected_label).strip().lower()
+    return requested == selected or requested in selected or selected in requested
+
+
 def _url_with_pose_overrides(base_url: str, values: dict[str, Any]) -> str:
     parsed = urllib.parse.urlparse(base_url)
     query = dict(urllib.parse.parse_qsl(parsed.query))
-    label = values.get("label") or values.get("yolo_label")
+    label = _requested_yolo_label(values)
     if label:
-        query["label"] = str(label)
+        query["label"] = label
     new_query = urllib.parse.urlencode(query)
     return urllib.parse.urlunparse(parsed._replace(query=new_query))
 
@@ -174,12 +192,16 @@ def _duration_for_distance_mm(distance_error_mm: float, config: AdjustConfig) ->
     return round(_clamp(duration, config.min_duration_sec, config.max_duration_sec), 3)
 
 
-def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
+def _pose_metrics(pose: dict[str, Any], config: AdjustConfig, values: dict[str, Any] | None = None) -> dict[str, Any]:
+    requested_label = _requested_yolo_label(values or {})
+    selected_label = pose.get("selected_yolo_label")
     if not pose.get("ok"):
         return {
             "ok": False,
             "error": pose.get("error") or "YOLO pose is not ok",
             "pose_ok": False,
+            "requested_yolo_label": requested_label,
+            "selected_yolo_label": selected_label,
         }
 
     yaw_deg = _nested(pose, "robot_alignment", "control_hint", "box_parallel_yaw_deg")
@@ -200,7 +222,11 @@ def _pose_metrics(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
     return {
         "ok": True,
         "pose_ok": True,
+        "requested_yolo_label": requested_label,
         "selected_yolo_label": pose.get("selected_yolo_label"),
+        "selected_yolo_class_id": pose.get("selected_yolo_class_id"),
+        "selected_yolo_confidence": pose.get("selected_yolo_confidence"),
+        "yolo_label_matched": _label_matches(requested_label, selected_label),
         "selected_orientation": pose.get("selected_orientation"),
         "box_parallel_yaw_deg": round(yaw_deg, 3),
         "near_edge_forward_mm": round(near_forward_mm, 1),
@@ -289,8 +315,8 @@ def _distance_command(metrics: dict[str, Any], config: AdjustConfig) -> dict[str
     }
 
 
-def build_plan(pose: dict[str, Any], config: AdjustConfig) -> dict[str, Any]:
-    metrics = _pose_metrics(pose, config)
+def build_plan(pose: dict[str, Any], config: AdjustConfig, values: dict[str, Any] | None = None) -> dict[str, Any]:
+    metrics = _pose_metrics(pose, config, values)
     if not metrics.get("ok"):
         metrics["command"] = None
         return metrics
@@ -367,12 +393,15 @@ def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) 
 def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
     started_at = _now_iso()
     started = time.perf_counter()
+    requested_label = _requested_yolo_label(values)
     pose = _fetch_pose(config, values)
-    metrics = _pose_metrics(pose, config)
+    metrics = _pose_metrics(pose, config, values)
     if not metrics.get("ok"):
         return {
             "ok": False,
             "dry_run": dry_run,
+            "requested_yolo_label": requested_label,
+            "selected_yolo_label": metrics.get("selected_yolo_label"),
             "started_at": started_at,
             "finished_at": _now_iso(),
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -403,6 +432,9 @@ def run_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: b
         "ok": ok,
         "dry_run": dry_run,
         "mode": "single_calculation_single_control_batch",
+        "requested_yolo_label": requested_label,
+        "selected_yolo_label": control_metrics.get("selected_yolo_label"),
+        "yolo_label_matched": control_metrics.get("yolo_label_matched"),
         "started_at": started_at,
         "finished_at": _now_iso(),
         "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -433,6 +465,7 @@ def stream_adjust_sequence(
     started_at = _now_iso()
     started = time.perf_counter()
     target_mm = round(float(config.target_near_edge_forward_mm), 1)
+    requested_label = _requested_yolo_label(values)
 
     def emit(event: str, payload: dict[str, Any] | None = None) -> None:
         message = {"event": event, "ts": _now_iso()}
@@ -446,17 +479,20 @@ def stream_adjust_sequence(
             "ok": True,
             "dry_run": dry_run,
             "mode": "single_calculation_single_control_batch",
+            "requested_yolo_label": requested_label,
             "target_near_edge_forward_mm": target_mm,
         },
     )
 
     try:
         pose = _fetch_pose(config, values)
-        metrics = _pose_metrics(pose, config)
+        metrics = _pose_metrics(pose, config, values)
         if not metrics.get("ok"):
             result = {
                 "ok": False,
                 "dry_run": dry_run,
+                "requested_yolo_label": requested_label,
+                "selected_yolo_label": metrics.get("selected_yolo_label"),
                 "started_at": started_at,
                 "finished_at": _now_iso(),
                 "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -514,6 +550,9 @@ def stream_adjust_sequence(
             "ok": ok,
             "dry_run": dry_run,
             "mode": "single_calculation_single_control_batch",
+            "requested_yolo_label": requested_label,
+            "selected_yolo_label": control_metrics.get("selected_yolo_label"),
+            "yolo_label_matched": control_metrics.get("yolo_label_matched"),
             "started_at": started_at,
             "finished_at": _now_iso(),
             "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
@@ -577,6 +616,7 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                             "sdk_build_dir": str(config.sdk_build_dir),
                             "interface": config.interface,
                             "endpoints": ["/health", "/plan", "/step", "/adjust", "/stop"],
+                            "label_usage": "pass ?label=XiongMao or ?label=Xizi_Liqun to make YOLO select that class before adjustment",
                             "streaming": "/adjust?stream=1 returns NDJSON progress events",
                             "safety": "/plan never moves; /adjust uses one YOLO calculation and sends one control batch; use /adjust?dry_run=1 to preview",
                         },
@@ -584,12 +624,22 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/plan":
                     pose = _fetch_pose(config, values)
-                    plan = build_plan(pose, config)
-                    _json_response(self, 200 if plan.get("ok") else 500, {"ok": bool(plan.get("ok")), "plan": plan})
+                    plan = build_plan(pose, config, values)
+                    _json_response(
+                        self,
+                        200 if plan.get("ok") else 500,
+                        {
+                            "ok": bool(plan.get("ok")),
+                            "requested_yolo_label": _requested_yolo_label(values),
+                            "selected_yolo_label": plan.get("selected_yolo_label"),
+                            "yolo_label_matched": plan.get("yolo_label_matched"),
+                            "plan": plan,
+                        },
+                    )
                     return
                 if path == "/step":
                     pose = _fetch_pose(config, values)
-                    plan = build_plan(pose, config)
+                    plan = build_plan(pose, config, values)
                     confirm = bool(values.get("confirm") or values.get("execute"))
                     execution = {"executed": False, "reason": "missing confirm=1"}
                     if confirm and plan.get("ok") and isinstance(plan.get("command"), dict):
@@ -597,7 +647,15 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                     _json_response(
                         self,
                         200 if plan.get("ok") else 500,
-                        {"ok": bool(plan.get("ok")), "confirmed": confirm, "plan": plan, "execution": execution},
+                        {
+                            "ok": bool(plan.get("ok")),
+                            "confirmed": confirm,
+                            "requested_yolo_label": _requested_yolo_label(values),
+                            "selected_yolo_label": plan.get("selected_yolo_label"),
+                            "yolo_label_matched": plan.get("yolo_label_matched"),
+                            "plan": plan,
+                            "execution": execution,
+                        },
                     )
                     return
                 if path == "/adjust":

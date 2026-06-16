@@ -67,16 +67,22 @@ curl -s "http://127.0.0.1:18084/adjust?target_near_edge_forward_mm=220"
 # 指定烟盒类别
 curl -s "http://127.0.0.1:18084/adjust?label=XiongMao"
 curl -s "http://127.0.0.1:18084/adjust?label=Xizi_Liqun"
+curl -s "http://127.0.0.1:18084/plan?label=XiongMao"
 
 # 调速度
 curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
 ```
+
+`label` 会原样传给 YOLO `/xyz`，YOLO 会先按类别选目标，再把该目标的四点、角度、近端边距离交给微调服务。`label=Liqun` 也可以匹配 `Xizi_Liqun`。
 
 ## 返回值
 
 重点看这些字段：
 
 ```text
+requested_yolo_label                    这次请求指定的 YOLO 标签
+selected_yolo_label                     YOLO 实际选中用于微调的标签
+yolo_label_matched                      指定标签和选中标签是否匹配
 metrics.box_parallel_yaw_deg           当前烟盒长轴角
 metrics.near_edge_forward_mm           当前近端边前向距离
 metrics.control_distance_error_mm      实际用于 forward/back 的距离误差

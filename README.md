@@ -451,7 +451,16 @@ curl -s "http://127.0.0.1:18084/stop?confirm=1"
 ```bash
 curl -s "http://127.0.0.1:18084/adjust?target_near_edge_forward_mm=220"
 curl -s "http://127.0.0.1:18084/adjust?label=XiongMao"
+curl -s "http://127.0.0.1:18084/adjust?label=Xizi_Liqun"
 curl -s "http://127.0.0.1:18084/adjust?turn_speed=0.08&drive_speed=0.08"
+```
+
+`label` 会传给 YOLO `/xyz`，微调服务只对这个类别的烟盒做角度和近端边距离计算。返回里重点看：
+
+```text
+requested_yolo_label      这次请求指定的 YOLO 标签
+selected_yolo_label       YOLO 实际选中用于微调的标签
+yolo_label_matched        指定标签和选中标签是否匹配
 ```
 
 更多说明见 `docs/G1D_POSE_ADJUST_SERVICE.md`。
