@@ -66,11 +66,16 @@ RESULT_CACHE_LOCK = threading.Lock()
 MAX_CACHED_RESULTS = 20
 MODEL_CLASS_NAMES_CACHE: dict[str, list[str]] = {}
 G1D_ADJUST_URL = "http://127.0.0.1:18084/adjust"
+G1D_TARGET_ANGLE_ADJUST_URL = "http://127.0.0.1:18084/adjust_target_angle"
 G1D_ADJUST_TIMEOUT_SEC = 45.0
 G1D_ADJUST_PROXY_TYPES: dict[str, type] = {
     "label": str,
     "yolo_label": str,
     "target_near_edge_forward_mm": float,
+    "target_turn_to_target_yaw_deg": float,
+    "target_turn_tolerance_deg": float,
+    "target_angle_deg": float,
+    "planner_turn_step_deg": float,
     "yaw_tolerance_deg": float,
     "distance_tolerance_mm": float,
     "turn_speed": float,
@@ -247,10 +252,10 @@ def _g1d_adjust_values(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return values
 
 
-def _serve_g1d_adjust(handler: BaseHTTPRequestHandler) -> None:
+def _serve_g1d_adjust(handler: BaseHTTPRequestHandler, request_url_base: str = G1D_ADJUST_URL) -> None:
     values = _g1d_adjust_values(handler)
     query = urlencode({key: value for key, value in values.items() if value is not None})
-    request_url = G1D_ADJUST_URL if not query else f"{G1D_ADJUST_URL}?{query}"
+    request_url = request_url_base if not query else f"{request_url_base}?{query}"
     try:
         with urllib.request.urlopen(request_url, timeout=G1D_ADJUST_TIMEOUT_SEC) as response:
             payload = json.loads(response.read().decode("utf-8", errors="replace"))
@@ -1289,12 +1294,16 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
     <div class="g1d-adjust-actions">
       <button id="g1dAdjustBtn" class="button primary-button" type="button">执行位置微调</button>
       <button id="g1dAdjustDryRunBtn" class="button" type="button">预览微调计划</button>
+      <button id="g1dTargetAngleAdjustBtn" class="button primary-alt-button" type="button">执行30°位置微调</button>
+      <button id="g1dTargetAngleDryRunBtn" class="button" type="button">预览30°计划</button>
     </div>
     <pre id="g1dAdjustStatus" class="g1d-adjust-status">等待操作</pre>
     <script>
       (() => {{
         const adjustBtn = document.getElementById("g1dAdjustBtn");
         const dryRunBtn = document.getElementById("g1dAdjustDryRunBtn");
+        const targetAngleBtn = document.getElementById("g1dTargetAngleAdjustBtn");
+        const targetAngleDryRunBtn = document.getElementById("g1dTargetAngleDryRunBtn");
         const statusEl = document.getElementById("g1dAdjustStatus");
         const initialSelectedLabel = {selected_label_json};
         const currentSelectedLabel = () => {{
@@ -1304,13 +1313,17 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
         const setStatus = (text) => {{
           if (statusEl) statusEl.textContent = text;
         }};
-        const runAdjust = async (dryRun) => {{
+        const runAdjust = async (dryRun, targetAngleMode) => {{
           const selectedLabel = currentSelectedLabel();
           const labelQuery = selectedLabel ? `&label=${{encodeURIComponent(selectedLabel)}}` : "";
-          const url = `/g1d/adjust?dry_run=${{dryRun ? "1" : "0"}}${{labelQuery}}&t=${{Date.now()}}`;
-          const button = dryRun ? dryRunBtn : adjustBtn;
+          const endpoint = targetAngleMode ? "/g1d/adjust_target_angle" : "/g1d/adjust";
+          const url = `${{endpoint}}?dry_run=${{dryRun ? "1" : "0"}}${{labelQuery}}&t=${{Date.now()}}`;
+          const button = targetAngleMode
+            ? (dryRun ? targetAngleDryRunBtn : targetAngleBtn)
+            : (dryRun ? dryRunBtn : adjustBtn);
           if (button) button.disabled = true;
-          setStatus(dryRun ? "正在读取 YOLO 并生成微调计划..." : "正在执行 G1-D 位置微调，请等待...");
+          const modeText = targetAngleMode ? "30°位置微调" : "位置微调";
+          setStatus(dryRun ? `正在读取 YOLO 并生成${{modeText}}计划...` : `正在执行 G1-D ${{modeText}}，请等待...`);
           try {{
             const res = await fetch(url, {{ method: "POST", cache: "no-store" }});
             const payload = await res.json();
@@ -1326,8 +1339,10 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
             if (button) button.disabled = false;
           }}
         }};
-        if (adjustBtn) adjustBtn.addEventListener("click", () => runAdjust(false));
-        if (dryRunBtn) dryRunBtn.addEventListener("click", () => runAdjust(true));
+        if (adjustBtn) adjustBtn.addEventListener("click", () => runAdjust(false, false));
+        if (dryRunBtn) dryRunBtn.addEventListener("click", () => runAdjust(true, false));
+        if (targetAngleBtn) targetAngleBtn.addEventListener("click", () => runAdjust(false, true));
+        if (targetAngleDryRunBtn) targetAngleDryRunBtn.addEventListener("click", () => runAdjust(true, true));
       }})();
     </script>
   </section>
@@ -1391,6 +1406,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .button {{ display: inline-block; padding: 7px 10px; border: 1px solid #8795a1; color: #102a43; text-decoration: none; background: #fff; font: inherit; cursor: pointer; }}
     .button:disabled {{ color: #829ab1; cursor: wait; }}
     .primary-button {{ background: #1266f1; border-color: #1266f1; color: #fff; }}
+    .primary-alt-button {{ background: #0f766e; border-color: #0f766e; color: #fff; }}
     .status {{ margin: 12px 0; }}
     .debug-label-control {{ display: inline-flex; align-items: center; gap: 6px; color: #243b53; font-weight: 700; }}
     .debug-label-control select {{ padding: 7px 9px; border: 1px solid #8795a1; font: inherit; background: #fff; }}
@@ -1568,6 +1584,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/latest/left_projected_zoom.jpg",
             "/debug",
             "/g1d/adjust",
+            "/g1d/adjust_target_angle",
         ],
     }
 
@@ -1616,6 +1633,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/g1d/adjust":
                     _serve_g1d_adjust(self)
+                    return
+                if path == "/g1d/adjust_target_angle":
+                    _serve_g1d_adjust(self, G1D_TARGET_ANGLE_ADJUST_URL)
                     return
                 if path in DEBUG_IMAGE_KEYS:
                     overrides = _request_overrides(self)

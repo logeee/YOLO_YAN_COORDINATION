@@ -433,6 +433,14 @@ curl -s http://127.0.0.1:18084/adjust
 curl -s http://192.168.60.121:18084/adjust
 ```
 
+新版 30° 规则微调，会优先让 `朝目标转角` 接近 30°，再尽量让 `烟盒长轴角` 接近 0°、`近端边前向` 接近 200mm：
+
+```bash
+curl -s "http://127.0.0.1:18084/adjust_target_angle?dry_run=1"
+curl -s "http://127.0.0.1:18084/adjust_target_angle"
+curl -s "http://127.0.0.1:18084/adjust_target_angle?target_turn_to_target_yaw_deg=30"
+```
+
 实时调试输出，一行一个 JSON 事件：
 
 ```bash
