@@ -423,29 +423,35 @@ curl -s http://127.0.0.1:18084/health
 
 ```bash
 curl -s "http://127.0.0.1:18084/adjust?dry_run=1"
-curl -s "http://192.168.60.121:18084/adjust?dry_run=1"
+curl -s "http://192.168.0.149:18084/adjust?dry_run=1"
 ```
 
 一键微调，会真的调用底盘 SDK：
 
 ```bash
 curl -s http://127.0.0.1:18084/adjust
-curl -s http://192.168.60.121:18084/adjust
+curl -s http://192.168.0.149:18084/adjust
 ```
 
-新版 30° 规则微调，会优先让 `朝目标转角` 接近 30°，再尽量让 `烟盒长轴角` 接近 0°、`近端边前向` 接近 200mm：
+右手侧安全入位，会按三步执行：先安全预对齐到 300mm，再重新 YOLO 后做 90° 伪横向调整，最后重新 YOLO 并收敛到 200mm：
 
 ```bash
-curl -s "http://127.0.0.1:18084/adjust_target_angle?dry_run=1"
-curl -s "http://127.0.0.1:18084/adjust_target_angle"
-curl -s "http://127.0.0.1:18084/adjust_target_angle?target_turn_to_target_yaw_deg=30"
+curl -s "http://127.0.0.1:18084/adjust_right_entry?dry_run=1"
+curl -s "http://127.0.0.1:18084/adjust_right_entry"
+curl -s "http://127.0.0.1:18084/adjust_right_entry?label=XiongMao"
+```
+
+默认参数：预对齐近端边前向 `300mm`，最终近端边前向 `200mm`，烟盒中心目标在机器人右侧 `200mm`。右侧目标可临时修改：
+
+```bash
+curl -s "http://127.0.0.1:18084/adjust_right_entry?right_entry_target_right_mm=220"
 ```
 
 实时调试输出，一行一个 JSON 事件：
 
 ```bash
 curl -N -s "http://127.0.0.1:18084/adjust?stream=1"
-curl -N -s "http://192.168.60.121:18084/adjust?stream=1"
+curl -N -s "http://192.168.0.149:18084/adjust?stream=1"
 ```
 
 紧急停止：

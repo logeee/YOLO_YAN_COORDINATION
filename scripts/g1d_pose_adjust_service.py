@@ -37,6 +37,12 @@ class AdjustConfig:
     target_turn_to_target_yaw_deg: float = 30.0
     target_turn_tolerance_deg: float = 3.0
     planner_turn_step_deg: float = 1.0
+    right_entry_prealign_forward_mm: float = 300.0
+    right_entry_final_forward_mm: float = 200.0
+    right_entry_target_right_mm: float = 200.0
+    right_entry_lateral_tolerance_mm: float = 15.0
+    right_entry_side_turn_base_deg: float = 90.0
+    right_entry_side_turn_max_duration_sec: float = 20.0
     yaw_tolerance_deg: float = 2.0
     distance_tolerance_mm: float = 15.0
     turn_speed: float = 0.1
@@ -54,6 +60,12 @@ OVERRIDE_TYPES: dict[str, type] = {
     "target_turn_tolerance_deg": float,
     "target_angle_deg": float,
     "planner_turn_step_deg": float,
+    "right_entry_prealign_forward_mm": float,
+    "right_entry_final_forward_mm": float,
+    "right_entry_target_right_mm": float,
+    "right_entry_lateral_tolerance_mm": float,
+    "right_entry_side_turn_base_deg": float,
+    "right_entry_side_turn_max_duration_sec": float,
     "yaw_tolerance_deg": float,
     "distance_tolerance_mm": float,
     "turn_speed": float,
@@ -166,6 +178,12 @@ def _config_with_overrides(config: AdjustConfig, values: dict[str, Any]) -> Adju
         "target_turn_to_target_yaw_deg",
         "target_turn_tolerance_deg",
         "planner_turn_step_deg",
+        "right_entry_prealign_forward_mm",
+        "right_entry_final_forward_mm",
+        "right_entry_target_right_mm",
+        "right_entry_lateral_tolerance_mm",
+        "right_entry_side_turn_base_deg",
+        "right_entry_side_turn_max_duration_sec",
         "yaw_tolerance_deg",
         "distance_tolerance_mm",
         "turn_speed",
@@ -234,10 +252,16 @@ def _nested(data: Any, *keys: str) -> Any:
     return current
 
 
-def _duration_for_turn_deg(yaw_deg: float, config: AdjustConfig) -> float:
+def _duration_for_turn_deg(
+    yaw_deg: float,
+    config: AdjustConfig,
+    *,
+    max_duration_sec: float | None = None,
+) -> float:
     speed = max(abs(float(config.turn_speed)), 1e-6)
     duration = math.radians(abs(float(yaw_deg))) / speed
-    return round(_clamp(duration, config.min_duration_sec, config.max_duration_sec), 3)
+    max_duration = float(config.max_duration_sec if max_duration_sec is None else max_duration_sec)
+    return round(_clamp(duration, config.min_duration_sec, max_duration), 3)
 
 
 def _duration_for_distance_mm(distance_error_mm: float, config: AdjustConfig) -> float:
@@ -390,6 +414,7 @@ def _turn_command_from_delta_deg(
     *,
     phase: str,
     reason: str,
+    max_duration_sec: float | None = None,
 ) -> dict[str, Any] | None:
     yaw_delta_deg = float(yaw_delta_deg)
     if abs(yaw_delta_deg) <= 0.5:
@@ -399,7 +424,7 @@ def _turn_command_from_delta_deg(
         "phase": phase,
         "action": action,
         "speed": round(float(config.turn_speed), 3),
-        "duration_sec": _duration_for_turn_deg(yaw_delta_deg, config),
+        "duration_sec": _duration_for_turn_deg(yaw_delta_deg, config, max_duration_sec=max_duration_sec),
         "reason": reason,
         "planned_delta_deg": round(yaw_delta_deg, 3),
         "error_deg": round(yaw_delta_deg, 3),
@@ -620,6 +645,126 @@ def build_target_angle_plan(
     return plan
 
 
+def _single_adjust_plan_from_pose(
+    pose: dict[str, Any],
+    config: AdjustConfig,
+    values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metrics = _pose_metrics(pose, config, values)
+    if not metrics.get("ok"):
+        return {
+            **metrics,
+            "commands": [],
+        }
+    commands, control_metrics = _single_calculation_commands(metrics, config)
+    return {
+        **control_metrics,
+        "strategy": "single_calculation_single_control_batch",
+        "commands": commands,
+    }
+
+
+def build_right_entry_side_shift_plan(
+    pose: dict[str, Any],
+    config: AdjustConfig,
+    values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metrics = _pose_metrics(pose, config, values)
+    if not metrics.get("ok"):
+        return {
+            **metrics,
+            "commands": [],
+        }
+
+    required = ("center_forward_mm", "center_right_mm", "box_parallel_yaw_deg")
+    missing = [key for key in required if metrics.get(key) is None]
+    if missing:
+        return {
+            **metrics,
+            "ok": False,
+            "error": "missing metrics for right-entry side shift: " + ", ".join(missing),
+            "commands": [],
+        }
+
+    center_forward_mm = float(metrics["center_forward_mm"])
+    center_right_mm = float(metrics["center_right_mm"])
+    box_yaw_deg = float(metrics["box_parallel_yaw_deg"])
+    target_right_mm = float(config.right_entry_target_right_mm)
+    lateral_error_mm = target_right_mm - center_right_mm
+    turn_delta_deg = float(config.right_entry_side_turn_base_deg) + box_yaw_deg
+    turn_delta_rad = math.radians(turn_delta_deg)
+    sin_turn = math.sin(turn_delta_rad)
+    cos_turn = math.cos(turn_delta_rad)
+
+    if abs(sin_turn) < 0.2:
+        return {
+            **metrics,
+            "ok": False,
+            "strategy": "right_hand_side_shift",
+            "error": "side-turn angle is too close to forward/back direction for safe lateral adjustment",
+            "turn_delta_deg": round(turn_delta_deg, 3),
+            "commands": [],
+        }
+
+    commands: list[dict[str, Any]] = []
+    predicted_drive_delta_mm = 0.0
+    if abs(lateral_error_mm) > float(config.right_entry_lateral_tolerance_mm):
+        predicted_drive_delta_mm = lateral_error_mm / sin_turn
+        side_turn = _turn_command_from_delta_deg(
+            turn_delta_deg,
+            config,
+            phase="right_entry_turn_sideways",
+            reason="turn about 90 degrees so forward/back motion becomes a controlled lateral shift",
+            max_duration_sec=float(config.right_entry_side_turn_max_duration_sec),
+        )
+        lateral_drive = _drive_command_from_delta_mm(
+            predicted_drive_delta_mm,
+            config,
+            phase="right_entry_lateral_drive",
+            reason="move forward/back after sideways turn to place the target at the right-hand lateral offset",
+        )
+        turn_back = _turn_command_from_delta_deg(
+            -turn_delta_deg,
+            config,
+            phase="right_entry_turn_back",
+            reason="return to the original operating heading after lateral shift",
+            max_duration_sec=float(config.right_entry_side_turn_max_duration_sec),
+        )
+        commands = [command for command in (side_turn, lateral_drive, turn_back) if command is not None]
+
+    predicted_center_right_mm = center_right_mm + predicted_drive_delta_mm * sin_turn
+    predicted_center_forward_mm = center_forward_mm - predicted_drive_delta_mm * cos_turn
+    if not commands:
+        commands = [
+            {
+                "phase": "right_entry_side_shift_done",
+                "action": "none",
+                "reason": "center lateral offset is already within right-entry tolerance",
+            }
+        ]
+
+    return {
+        **metrics,
+        "strategy": "right_hand_side_shift",
+        "right_entry_rule": (
+            "after safe pre-align, refetch YOLO; turn left by 90deg plus residual box yaw, "
+            "drive forward/back to correct center_right_mm to the right-hand target, then turn back"
+        ),
+        "right_entry_target_right_mm": round(target_right_mm, 1),
+        "right_entry_lateral_tolerance_mm": round(float(config.right_entry_lateral_tolerance_mm), 1),
+        "right_entry_side_turn_base_deg": round(float(config.right_entry_side_turn_base_deg), 3),
+        "side_turn_delta_deg": round(turn_delta_deg, 3),
+        "side_turn_delta_rad": round(turn_delta_rad, 6),
+        "side_turn_sin": round(sin_turn, 6),
+        "side_turn_cos": round(cos_turn, 6),
+        "lateral_error_mm": round(lateral_error_mm, 1),
+        "predicted_drive_delta_mm": round(predicted_drive_delta_mm, 1),
+        "predicted_center_right_after_side_shift_mm": round(predicted_center_right_mm, 1),
+        "predicted_center_forward_after_side_shift_mm": round(predicted_center_forward_mm, 1),
+        "commands": commands,
+    }
+
+
 def build_plan(pose: dict[str, Any], config: AdjustConfig, values: dict[str, Any] | None = None) -> dict[str, Any]:
     metrics = _pose_metrics(pose, config, values)
     if not metrics.get("ok"):
@@ -681,6 +826,31 @@ def execute_command(config: AdjustConfig, command: dict[str, Any]) -> dict[str, 
 
 def _execution_ok(execution: dict[str, Any] | None) -> bool:
     return execution is not None and bool(execution.get("ok"))
+
+
+def _execute_command_batch(
+    config: AdjustConfig,
+    commands: list[dict[str, Any]],
+    dry_run: bool,
+) -> list[dict[str, Any]]:
+    executions: list[dict[str, Any]] = []
+    if dry_run:
+        return [{"executed": False, "reason": "dry_run=1"} for _command in commands]
+
+    for command in commands:
+        execution = execute_command(config, command)
+        executions.append(execution)
+        if not _execution_ok(execution):
+            break
+    return executions
+
+
+def _commands_ok(commands: list[dict[str, Any]], executions: list[dict[str, Any]], dry_run: bool) -> bool:
+    if not commands:
+        return True
+    if dry_run:
+        return True
+    return all(_execution_ok(execution) for execution in executions)
 
 
 def _single_calculation_commands(metrics: dict[str, Any], config: AdjustConfig) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -831,6 +1001,106 @@ def run_target_angle_adjust_sequence(config: AdjustConfig, values: dict[str, Any
     if not ok:
         result["error"] = "control command failed"
     return result
+
+
+def run_right_entry_adjust_sequence(config: AdjustConfig, values: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+    started_at = _now_iso()
+    started = time.perf_counter()
+    requested_label = _requested_yolo_label(values)
+    stages: list[dict[str, Any]] = []
+
+    def finish(ok: bool, error: str | None = None, note: str | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "ok": ok,
+            "dry_run": dry_run,
+            "mode": "right_hand_safe_entry",
+            "requested_yolo_label": requested_label,
+            "started_at": started_at,
+            "finished_at": _now_iso(),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            "right_entry_targets": {
+                "prealign_near_edge_forward_mm": round(float(config.right_entry_prealign_forward_mm), 1),
+                "final_near_edge_forward_mm": round(float(config.right_entry_final_forward_mm), 1),
+                "center_right_mm": round(float(config.right_entry_target_right_mm), 1),
+            },
+            "stages": stages,
+        }
+        if error:
+            result["error"] = error
+        if note:
+            result["note"] = note
+        return result
+
+    def add_single_adjust_stage(stage_name: str, stage_config: AdjustConfig) -> bool:
+        pose = _fetch_pose(stage_config, values)
+        plan = _single_adjust_plan_from_pose(pose, stage_config, values)
+        commands = [command for command in plan.get("commands", []) if isinstance(command, dict)]
+        executions = _execute_command_batch(stage_config, commands, dry_run)
+        stage = {
+            "stage": stage_name,
+            "pose_ok": bool(pose.get("ok")),
+            "metrics": plan,
+            "commands": commands,
+            "executions": executions,
+        }
+        stages.append(stage)
+        return bool(plan.get("ok")) and _commands_ok(commands, executions, dry_run)
+
+    prealign_config = replace(config, target_near_edge_forward_mm=float(config.right_entry_prealign_forward_mm))
+    if not add_single_adjust_stage("safe_prealign_to_300mm", prealign_config):
+        return finish(False, "safe pre-align failed")
+
+    if dry_run:
+        stages.append(
+            {
+                "stage": "side_shift_and_final_adjust_skipped",
+                "pose_ok": None,
+                "metrics": {
+                    "ok": True,
+                    "reason": (
+                        "dry_run=1 only previews the first safe pre-align stage; the side shift and final "
+                        "200mm adjust require fresh YOLO after real movement"
+                    ),
+                },
+                "commands": [],
+                "executions": [],
+            }
+        )
+        return finish(
+            True,
+            note=(
+                "Dry run shows stage 1 only. Stage 2 and stage 3 deliberately refetch YOLO after real movement, "
+                "so they are not simulated from stale data."
+            ),
+        )
+
+    side_pose = _fetch_pose(config, values)
+    side_plan = build_right_entry_side_shift_plan(side_pose, config, values)
+    side_commands = [command for command in side_plan.get("commands", []) if isinstance(command, dict)]
+    side_executions = _execute_command_batch(config, side_commands, dry_run=False)
+    stages.append(
+        {
+            "stage": "pseudo_lateral_shift_to_right_hand",
+            "pose_ok": bool(side_pose.get("ok")),
+            "metrics": side_plan,
+            "commands": side_commands,
+            "executions": side_executions,
+        }
+    )
+    if not side_plan.get("ok") or not _commands_ok(side_commands, side_executions, dry_run=False):
+        return finish(False, "pseudo lateral shift failed")
+
+    final_config = replace(config, target_near_edge_forward_mm=float(config.right_entry_final_forward_mm))
+    if not add_single_adjust_stage("final_adjust_to_200mm", final_config):
+        return finish(False, "final operation adjust failed")
+
+    return finish(
+        True,
+        note=(
+            "Right-hand safe entry uses fresh YOLO before each major stage: pre-align to 300mm, "
+            "pseudo-lateral side shift, then final 200mm operation adjust."
+        ),
+    )
 
 
 def stream_adjust_sequence(
@@ -999,12 +1269,15 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                                 "/adjust",
                                 "/plan_target_angle",
                                 "/adjust_target_angle",
+                                "/plan_right_entry",
+                                "/adjust_right_entry",
                                 "/stop",
                             ],
                             "label_usage": "pass ?label=XiongMao or ?label=Xizi_Liqun to make YOLO select that class before adjustment",
                             "streaming": "/adjust?stream=1 returns NDJSON progress events",
                             "target_angle_rule": "use /adjust_target_angle to prefer turn_to_target_yaw_deg=30deg while keeping box yaw and near-edge distance controlled",
-                            "safety": "/plan and /plan_target_angle never move; /adjust and /adjust_target_angle use one YOLO calculation and send one bounded control batch; use dry_run=1 to preview",
+                            "right_entry_rule": "use /adjust_right_entry for right-hand safe entry: pre-align to 300mm, refetch YOLO, side-shift, refetch YOLO, final adjust to 200mm",
+                            "safety": "/plan, /plan_target_angle, /plan_right_entry, and dry_run=1 never move the robot",
                         },
                     )
                     return
@@ -1073,6 +1346,15 @@ def make_handler(base_config: AdjustConfig) -> type[BaseHTTPRequestHandler]:
                     result = run_target_angle_adjust_sequence(config, values, dry_run=dry_run)
                     _json_response(self, 200 if result.get("ok") else 500, result)
                     return
+                if path == "/plan_right_entry":
+                    result = run_right_entry_adjust_sequence(config, values, dry_run=True)
+                    _json_response(self, 200 if result.get("ok") else 500, result)
+                    return
+                if path == "/adjust_right_entry":
+                    dry_run = bool(values.get("dry_run"))
+                    result = run_right_entry_adjust_sequence(config, values, dry_run=dry_run)
+                    _json_response(self, 200 if result.get("ok") else 500, result)
+                    return
                 if path == "/stop":
                     confirm = bool(values.get("confirm") or values.get("execute"))
                     command = {"action": "stop"}
@@ -1099,6 +1381,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-turn-to-target-yaw-deg", type=float, default=30.0)
     parser.add_argument("--target-turn-tolerance-deg", type=float, default=3.0)
     parser.add_argument("--planner-turn-step-deg", type=float, default=1.0)
+    parser.add_argument("--right-entry-prealign-forward-mm", type=float, default=300.0)
+    parser.add_argument("--right-entry-final-forward-mm", type=float, default=200.0)
+    parser.add_argument("--right-entry-target-right-mm", type=float, default=200.0)
+    parser.add_argument("--right-entry-lateral-tolerance-mm", type=float, default=15.0)
+    parser.add_argument("--right-entry-side-turn-base-deg", type=float, default=90.0)
+    parser.add_argument("--right-entry-side-turn-max-duration-sec", type=float, default=20.0)
     parser.add_argument("--yaw-tolerance-deg", type=float, default=2.0)
     parser.add_argument("--distance-tolerance-mm", type=float, default=15.0)
     parser.add_argument("--turn-speed", type=float, default=0.1)
@@ -1120,6 +1408,12 @@ def main() -> int:
         target_turn_to_target_yaw_deg=args.target_turn_to_target_yaw_deg,
         target_turn_tolerance_deg=args.target_turn_tolerance_deg,
         planner_turn_step_deg=args.planner_turn_step_deg,
+        right_entry_prealign_forward_mm=args.right_entry_prealign_forward_mm,
+        right_entry_final_forward_mm=args.right_entry_final_forward_mm,
+        right_entry_target_right_mm=args.right_entry_target_right_mm,
+        right_entry_lateral_tolerance_mm=args.right_entry_lateral_tolerance_mm,
+        right_entry_side_turn_base_deg=args.right_entry_side_turn_base_deg,
+        right_entry_side_turn_max_duration_sec=args.right_entry_side_turn_max_duration_sec,
         yaw_tolerance_deg=args.yaw_tolerance_deg,
         distance_tolerance_mm=args.distance_tolerance_mm,
         turn_speed=args.turn_speed,

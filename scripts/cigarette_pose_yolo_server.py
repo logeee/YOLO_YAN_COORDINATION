@@ -67,7 +67,8 @@ MAX_CACHED_RESULTS = 20
 MODEL_CLASS_NAMES_CACHE: dict[str, list[str]] = {}
 G1D_ADJUST_URL = "http://127.0.0.1:18084/adjust"
 G1D_TARGET_ANGLE_ADJUST_URL = "http://127.0.0.1:18084/adjust_target_angle"
-G1D_ADJUST_TIMEOUT_SEC = 45.0
+G1D_RIGHT_ENTRY_ADJUST_URL = "http://127.0.0.1:18084/adjust_right_entry"
+G1D_ADJUST_TIMEOUT_SEC = 90.0
 G1D_ADJUST_PROXY_TYPES: dict[str, type] = {
     "label": str,
     "yolo_label": str,
@@ -76,6 +77,12 @@ G1D_ADJUST_PROXY_TYPES: dict[str, type] = {
     "target_turn_tolerance_deg": float,
     "target_angle_deg": float,
     "planner_turn_step_deg": float,
+    "right_entry_prealign_forward_mm": float,
+    "right_entry_final_forward_mm": float,
+    "right_entry_target_right_mm": float,
+    "right_entry_lateral_tolerance_mm": float,
+    "right_entry_side_turn_base_deg": float,
+    "right_entry_side_turn_max_duration_sec": float,
     "yaw_tolerance_deg": float,
     "distance_tolerance_mm": float,
     "turn_speed": float,
@@ -1294,16 +1301,16 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
     <div class="g1d-adjust-actions">
       <button id="g1dAdjustBtn" class="button primary-button" type="button">执行位置微调</button>
       <button id="g1dAdjustDryRunBtn" class="button" type="button">预览微调计划</button>
-      <button id="g1dTargetAngleAdjustBtn" class="button primary-alt-button" type="button">执行30°位置微调</button>
-      <button id="g1dTargetAngleDryRunBtn" class="button" type="button">预览30°计划</button>
+      <button id="g1dRightEntryAdjustBtn" class="button primary-alt-button" type="button">执行右手安全入位</button>
+      <button id="g1dRightEntryDryRunBtn" class="button" type="button">预览右手入位</button>
     </div>
     <pre id="g1dAdjustStatus" class="g1d-adjust-status">等待操作</pre>
     <script>
       (() => {{
         const adjustBtn = document.getElementById("g1dAdjustBtn");
         const dryRunBtn = document.getElementById("g1dAdjustDryRunBtn");
-        const targetAngleBtn = document.getElementById("g1dTargetAngleAdjustBtn");
-        const targetAngleDryRunBtn = document.getElementById("g1dTargetAngleDryRunBtn");
+        const rightEntryBtn = document.getElementById("g1dRightEntryAdjustBtn");
+        const rightEntryDryRunBtn = document.getElementById("g1dRightEntryDryRunBtn");
         const statusEl = document.getElementById("g1dAdjustStatus");
         const initialSelectedLabel = {selected_label_json};
         const currentSelectedLabel = () => {{
@@ -1313,16 +1320,16 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
         const setStatus = (text) => {{
           if (statusEl) statusEl.textContent = text;
         }};
-        const runAdjust = async (dryRun, targetAngleMode) => {{
+        const runAdjust = async (dryRun, mode) => {{
           const selectedLabel = currentSelectedLabel();
           const labelQuery = selectedLabel ? `&label=${{encodeURIComponent(selectedLabel)}}` : "";
-          const endpoint = targetAngleMode ? "/g1d/adjust_target_angle" : "/g1d/adjust";
+          const endpoint = mode === "right_entry" ? "/g1d/adjust_right_entry" : "/g1d/adjust";
           const url = `${{endpoint}}?dry_run=${{dryRun ? "1" : "0"}}${{labelQuery}}&t=${{Date.now()}}`;
-          const button = targetAngleMode
-            ? (dryRun ? targetAngleDryRunBtn : targetAngleBtn)
+          const button = mode === "right_entry"
+            ? (dryRun ? rightEntryDryRunBtn : rightEntryBtn)
             : (dryRun ? dryRunBtn : adjustBtn);
           if (button) button.disabled = true;
-          const modeText = targetAngleMode ? "30°位置微调" : "位置微调";
+          const modeText = mode === "right_entry" ? "右手安全入位" : "位置微调";
           setStatus(dryRun ? `正在读取 YOLO 并生成${{modeText}}计划...` : `正在执行 G1-D ${{modeText}}，请等待...`);
           try {{
             const res = await fetch(url, {{ method: "POST", cache: "no-store" }});
@@ -1339,10 +1346,10 @@ def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
             if (button) button.disabled = false;
           }}
         }};
-        if (adjustBtn) adjustBtn.addEventListener("click", () => runAdjust(false, false));
-        if (dryRunBtn) dryRunBtn.addEventListener("click", () => runAdjust(true, false));
-        if (targetAngleBtn) targetAngleBtn.addEventListener("click", () => runAdjust(false, true));
-        if (targetAngleDryRunBtn) targetAngleDryRunBtn.addEventListener("click", () => runAdjust(true, true));
+        if (adjustBtn) adjustBtn.addEventListener("click", () => runAdjust(false, "default"));
+        if (dryRunBtn) dryRunBtn.addEventListener("click", () => runAdjust(true, "default"));
+        if (rightEntryBtn) rightEntryBtn.addEventListener("click", () => runAdjust(false, "right_entry"));
+        if (rightEntryDryRunBtn) rightEntryDryRunBtn.addEventListener("click", () => runAdjust(true, "right_entry"));
       }})();
     </script>
   </section>
@@ -1585,6 +1592,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/debug",
             "/g1d/adjust",
             "/g1d/adjust_target_angle",
+            "/g1d/adjust_right_entry",
         ],
     }
 
@@ -1636,6 +1644,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/g1d/adjust_target_angle":
                     _serve_g1d_adjust(self, G1D_TARGET_ANGLE_ADJUST_URL)
+                    return
+                if path == "/g1d/adjust_right_entry":
+                    _serve_g1d_adjust(self, G1D_RIGHT_ENTRY_ADJUST_URL)
                     return
                 if path in DEBUG_IMAGE_KEYS:
                     overrides = _request_overrides(self)
