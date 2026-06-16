@@ -13,6 +13,7 @@ import json
 import math
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
@@ -167,8 +168,20 @@ def _url_with_pose_overrides(base_url: str, values: dict[str, Any]) -> str:
 
 def _fetch_pose(config: AdjustConfig, values: dict[str, Any]) -> dict[str, Any]:
     url = _url_with_pose_overrides(config.yolo_xyz_url, values)
-    with urllib.request.urlopen(url, timeout=float(config.request_timeout_sec)) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+    try:
+        with urllib.request.urlopen(url, timeout=float(config.request_timeout_sec)) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = {"ok": False, "error": body.strip() or f"YOLO /xyz HTTP {exc.code}"}
+        if not isinstance(payload, dict):
+            payload = {"ok": False, "error": f"YOLO /xyz HTTP {exc.code}: non-object JSON response"}
+        payload.setdefault("ok", False)
+        payload.setdefault("error", f"YOLO /xyz HTTP {exc.code}")
+        return payload
 
 
 def _nested(data: Any, *keys: str) -> Any:
