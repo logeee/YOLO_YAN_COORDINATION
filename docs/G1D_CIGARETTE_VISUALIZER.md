@@ -125,7 +125,7 @@ G1 URDF 只给了整体 `d435_link`，没有单独给 left/right imager link；�
 
 ```text
 rt/lowstate        unitree_hg LowState，读取 motor_state[i].q
-rt/hispeed_state   geometry_msgs Point32，读取 y 作为立柱当前高度
+rt/hispeed_state   geometry_msgs Point32，读取 y 作为立柱 raw 高度，再标定映射到 URDF 高度
 ```
 
 服务启动参数：
@@ -165,7 +165,7 @@ lowstate[12] -> torso_Joint
 lowstate[14] -> Yaw_Joint
 lowstate[15:22] -> left shoulder/elbow/wrist
 lowstate[22:29] -> right shoulder/elbow/wrist
-hispeed_state.y -> LZ_mt_Joint + LZ_it_Joint
+hispeed_state.y -> column_raw_extension_mm -> column_extension_mm -> LZ_mt_Joint + LZ_it_Joint
 ```
 
 仍然兼容外部状态服务或 ROS `JointState` 风格：
@@ -189,6 +189,18 @@ hispeed_state.y -> LZ_mt_Joint + LZ_it_Joint
   - `LZ_mt_Joint`: `0 ~ 210mm`
   - `LZ_it_Joint`: `0 ~ 210mm`
   - 页面默认总展开量 `420mm`，也就是两节都展开到上限。
+- 2026-06-17 做过一次现场标定：实体最高位时 DDS `hispeed_state.y` 约为 `246.9mm`，因此页面默认把 raw `0.0 ~ 246.9mm` 线性映射到 URDF `0.0 ~ 420.0mm`。
+- `/api/robot_state` 会同时返回：
+  - `column_raw_extension_mm`：DDS 原始高度读数。
+  - `column_extension_mm`：标定后用于驱动 URDF 的显示高度。
+  - `column_calibration`：当前 raw/visual 映射参数。
+- 如需临时改标定参数，可以设置环境变量后重启 `g1d-cigarette-visualizer.service`：
+
+```bash
+COLUMN_RAW_MIN_MM=0.0
+COLUMN_RAW_MAX_MM=246.9
+COLUMN_VISUAL_MAX_MM=420.0
+```
 - G1 URDF 里有 `d435_joint`，页面默认使用 `torso_link` 局部坐标 `[0.0576235, 0.01753, 0.42987]m`。G1 URDF 没有单独 left/right imager link，页面仍保留 `X/Y/Z` 输入用于现场微调。
 - 烟盒上表面尺寸来自 `/xyz` 的 `object_top_size_mm`，没有时使用默认值：
   - `XiongMao`: `161mm x 95mm`

@@ -27,11 +27,22 @@ DEFAULT_DDS_INTERFACE = "eth0"
 DEFAULT_DDS_LOWSTATE_TOPIC = "rt/lowstate"
 DEFAULT_DDS_HISPEED_TOPIC = "rt/hispeed_state"
 DEFAULT_UNITREE_SDK2PY_PATH = "/home/unitree/unitree_sdk2_python"
+DEFAULT_COLUMN_RAW_MIN_MM = 0.0
+DEFAULT_COLUMN_RAW_MAX_MM = 246.9
+DEFAULT_COLUMN_VISUAL_MAX_MM = 420.0
 VIEWER_DIR = Path(__file__).resolve().parents[1] / "visualization" / "g1d_cigarette_viewer"
 DEFAULT_ROBOT_STATE: dict[str, Any] = {
     "ok": True,
     "source": "visualizer_default",
+    "column_raw_extension_mm": None,
     "column_extension_mm": 420.0,
+    "column_calibration": {
+        "source": "default_state",
+        "raw_min_mm": DEFAULT_COLUMN_RAW_MIN_MM,
+        "raw_max_mm": DEFAULT_COLUMN_RAW_MAX_MM,
+        "visual_min_mm": 0.0,
+        "visual_max_mm": DEFAULT_COLUMN_VISUAL_MAX_MM,
+    },
     "joints": {
         "LZ_mt_Joint": 0.21,
         "LZ_it_Joint": 0.21,
@@ -89,6 +100,25 @@ def _round_float(value: Any, ndigits: int = 6) -> float | None:
         return None
 
 
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(float(low), min(float(high), float(value)))
+
+
+def _calibrated_column_extension_mm(
+    raw_mm: float,
+    raw_min_mm: float,
+    raw_max_mm: float,
+    visual_max_mm: float,
+) -> float:
+    raw_min = float(raw_min_mm)
+    raw_max = float(raw_max_mm)
+    visual_max = float(visual_max_mm)
+    if raw_max <= raw_min:
+        return round(_clamp(float(raw_mm), 0.0, visual_max), 1)
+    ratio = (float(raw_mm) - raw_min) / (raw_max - raw_min)
+    return round(_clamp(ratio, 0.0, 1.0) * visual_max, 1)
+
+
 class _DdsStateReader:
     def __init__(
         self,
@@ -97,6 +127,9 @@ class _DdsStateReader:
         lowstate_topic: str,
         hispeed_topic: str,
         sdk2py_path: str,
+        column_raw_min_mm: float,
+        column_raw_max_mm: float,
+        column_visual_max_mm: float,
     ) -> None:
         if sdk2py_path and sdk2py_path not in sys.path and Path(sdk2py_path).exists():
             sys.path.insert(0, sdk2py_path)
@@ -108,6 +141,9 @@ class _DdsStateReader:
         self.lowstate_topic = lowstate_topic
         self.hispeed_topic = hispeed_topic
         self.sdk2py_path = sdk2py_path
+        self.column_raw_min_mm = float(column_raw_min_mm)
+        self.column_raw_max_mm = float(column_raw_max_mm)
+        self.column_visual_max_mm = float(column_visual_max_mm)
         self.lock = threading.Lock()
         self.lowstate_msg: Any = None
         self.hispeed_msg: Any = None
@@ -166,10 +202,18 @@ class _DdsStateReader:
             joint_states_velocity.append(dq if dq is not None else 0.0)
             joint_states_effort.append(tau_est if tau_est is not None else 0.0)
 
-        column_height_m = _round_float(_read_member(hispeed, "y")) if hispeed is not None else None
-        if column_height_m is not None:
-            column_height_m = max(0.0, min(0.42, column_height_m))
-            per_joint = column_height_m / 2.0
+        column_raw_height_m = _round_float(_read_member(hispeed, "y")) if hispeed is not None else None
+        column_raw_mm = round(column_raw_height_m * 1000.0, 1) if column_raw_height_m is not None else None
+        column_visual_mm = None
+        if column_raw_mm is not None:
+            column_visual_mm = _calibrated_column_extension_mm(
+                column_raw_mm,
+                self.column_raw_min_mm,
+                self.column_raw_max_mm,
+                self.column_visual_max_mm,
+            )
+            column_visual_m = column_visual_mm / 1000.0
+            per_joint = column_visual_m / 2.0
             joints["LZ_mt_Joint"] = per_joint
             joints["LZ_it_Joint"] = per_joint
             for name in ("LZ_mt_Joint", "LZ_it_Joint"):
@@ -197,7 +241,16 @@ class _DdsStateReader:
                 "hispeed_age_ms": round((time.time() - hispeed_time) * 1000.0, 1) if hispeed_time else None,
                 "motor_count": len(motor_state),
             },
-            "column_extension_mm": round(column_height_m * 1000.0, 1) if column_height_m is not None else None,
+            "column_raw_extension_mm": column_raw_mm,
+            "column_extension_mm": column_visual_mm,
+            "column_calibration": {
+                "source": "dds_hispeed_y_linear_calibration",
+                "raw_min_mm": round(self.column_raw_min_mm, 1),
+                "raw_max_mm": round(self.column_raw_max_mm, 1),
+                "visual_min_mm": 0.0,
+                "visual_max_mm": round(self.column_visual_max_mm, 1),
+                "sample_note": "2026-06-17 high position sampled at raw 246.9mm; SDK down/up did not expose a lower endpoint during automatic calibration",
+            },
             "joints": joints,
             "joint_states": {
                 "name": joint_states_name,
@@ -217,6 +270,9 @@ def _read_dds_robot_state(
     lowstate_topic: str,
     hispeed_topic: str,
     sdk2py_path: str,
+    column_raw_min_mm: float,
+    column_raw_max_mm: float,
+    column_visual_max_mm: float,
     timeout_sec: float,
 ) -> dict[str, Any]:
     global DDS_READER
@@ -226,6 +282,9 @@ def _read_dds_robot_state(
             lowstate_topic=lowstate_topic,
             hispeed_topic=hispeed_topic,
             sdk2py_path=sdk2py_path,
+            column_raw_min_mm=column_raw_min_mm,
+            column_raw_max_mm=column_raw_max_mm,
+            column_visual_max_mm=column_visual_max_mm,
         )
     return DDS_READER.state(timeout_sec)
 
@@ -317,6 +376,9 @@ def _read_robot_state(
     dds_hispeed_topic: str | None,
     unitree_sdk2py_path: str,
     joint_states_topic: str | None,
+    column_raw_min_mm: float,
+    column_raw_max_mm: float,
+    column_visual_max_mm: float,
     timeout_sec: float,
 ) -> dict[str, Any]:
     if robot_state_url:
@@ -334,6 +396,9 @@ def _read_robot_state(
                 lowstate_topic=dds_lowstate_topic,
                 hispeed_topic=dds_hispeed_topic or DEFAULT_DDS_HISPEED_TOPIC,
                 sdk2py_path=unitree_sdk2py_path,
+                column_raw_min_mm=column_raw_min_mm,
+                column_raw_max_mm=column_raw_max_mm,
+                column_visual_max_mm=column_visual_max_mm,
                 timeout_sec=timeout_sec,
             )
         except Exception as exc:
@@ -356,6 +421,9 @@ def make_handler(
     dds_hispeed_topic: str | None,
     unitree_sdk2py_path: str,
     joint_states_topic: str | None,
+    column_raw_min_mm: float,
+    column_raw_max_mm: float,
+    column_visual_max_mm: float,
 ) -> type[SimpleHTTPRequestHandler]:
     class VisualizerHandler(SimpleHTTPRequestHandler):
         server_version = "G1DCigaretteVisualizer/1.0"
@@ -394,6 +462,12 @@ def make_handler(
                         "dds_hispeed_topic": dds_hispeed_topic,
                         "unitree_sdk2py_path": unitree_sdk2py_path,
                         "joint_states_topic": joint_states_topic,
+                        "column_calibration": {
+                            "raw_min_mm": round(float(column_raw_min_mm), 1),
+                            "raw_max_mm": round(float(column_raw_max_mm), 1),
+                            "visual_min_mm": 0.0,
+                            "visual_max_mm": round(float(column_visual_max_mm), 1),
+                        },
                     },
                 )
                 return
@@ -424,6 +498,9 @@ def make_handler(
                         query_dds_hispeed_topic,
                         unitree_sdk2py_path,
                         topic,
+                        float(column_raw_min_mm),
+                        float(column_raw_max_mm),
+                        float(column_visual_max_mm),
                         timeout_sec,
                     )
                     _json_response(self, 200 if payload.get("ok", True) else 502, {"ok": True, "state": payload})
@@ -450,6 +527,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dds-hispeed-topic", default=DEFAULT_DDS_HISPEED_TOPIC)
     parser.add_argument("--unitree-sdk2py-path", default=DEFAULT_UNITREE_SDK2PY_PATH)
     parser.add_argument("--joint-states-topic", default=DEFAULT_JOINT_STATES_TOPIC)
+    parser.add_argument("--column-raw-min-mm", type=float, default=DEFAULT_COLUMN_RAW_MIN_MM)
+    parser.add_argument("--column-raw-max-mm", type=float, default=DEFAULT_COLUMN_RAW_MAX_MM)
+    parser.add_argument("--column-visual-max-mm", type=float, default=DEFAULT_COLUMN_VISUAL_MAX_MM)
     parser.add_argument("--timeout-sec", type=float, default=8.0)
     return parser
 
@@ -470,6 +550,9 @@ def main() -> int:
             args.dds_hispeed_topic or None,
             args.unitree_sdk2py_path,
             args.joint_states_topic or None,
+            args.column_raw_min_mm,
+            args.column_raw_max_mm,
+            args.column_visual_max_mm,
         ),
     )
     print(f"serving G1-D cigarette visualizer on http://{args.bind}:{args.port}", flush=True)

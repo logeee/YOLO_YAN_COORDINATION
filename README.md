@@ -518,7 +518,7 @@ http://127.0.0.1:18085/
 http://<机器人IP>:18085/
 ```
 
-页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认读取 YOLO `/xyz` 的 `g1d_visualization` 数据，失败时才用示例数据。左目相机使用官方 `d435_joint`，绑定到 `torso_link`，并画出 `47.6°` optical 坐标轴。机器人状态从 `/api/robot_state` 读取；机器人上默认接宇树 DDS `rt/lowstate` 和 `rt/hispeed_state`，可驱动立柱和 URDF joint。
+页面使用 Unitree 官方 `g1_d_description` 的 `g1_d.urdf` 和 `meshes/*.STL` 显示 G1-D。默认读取 YOLO `/xyz` 的 `g1d_visualization` 数据，失败时才用示例数据。左目相机使用官方 `d435_joint`，绑定到 `torso_link`，并画出 `47.6°` optical 坐标轴。机器人状态从 `/api/robot_state` 读取；机器人上默认接宇树 DDS `rt/lowstate` 和 `rt/hispeed_state`，可驱动立柱和 URDF joint。立柱显示已做现场标定：DDS raw `0.0 ~ 246.9mm` 映射到 URDF `0.0 ~ 420.0mm`。
 
 YOLO `/debug` 页面现在也会显示一块 `G1-D 可视化需要的数据`，包括 joint states 需求、朝目标转角、烟盒长轴角、中心垂直距离、中心地面前向和近端边地面前向。
 
