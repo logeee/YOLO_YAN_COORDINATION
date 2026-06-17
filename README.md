@@ -22,6 +22,7 @@
 | `18081` | YOLO 烟盒识别与坐标服务 | `http://<机器人IP>:18081/debug` |
 | `18084` | G1-D 位置微调服务 | `http://<机器人IP>:18084/health` |
 | `18085` | G1-D / 烟盒 3D 相对位置可视化 | `http://<机器人IP>:18085/` |
+| `18086` | G1-D 浏览器遥控页面 | `http://<机器人IP>:18086/` |
 
 思岚底盘传感器可视化是独立仓库，不在本仓库里：
 
@@ -524,6 +525,75 @@ YOLO `/debug` 页面现在也会显示一块 `G1-D 可视化需要的数据`，�
 
 更多说明见 `docs/G1D_CIGARETTE_VISUALIZER.md`。
 
+## G1-D 遥控页面
+
+遥控页面单独跑在 `18086`，用于遥控器损坏时临时手动控制 G1-D。页面支持：
+
+- 升降柱：升、降
+- 底盘：前进、后退、左转、右转
+- `STOP` 急停
+- 按住按钮启动一条默认 600 秒的长时运动命令，松手、移出按钮或触控取消时自动补一次 `stop`
+- 执行模式下，新动作或 `STOP` 前会先清理遗留的 `g1d_simple_control <interface>` 进程
+- 页面显示当前机器人 IP，后端优先读取无线网卡 IP，找不到无线网卡时读取有线网卡 IP
+
+本地或机器人上预览启动，不会真的调用 SDK：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/g1d_remote_control_server.sh
+```
+
+执行模式，会真的调用 `/home/unitree/unitree_sdk2/build/bin/g1d_simple_control`：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+REMOTE_CONTROL_EXECUTE_ENABLED=1 bash scripts/g1d_remote_control_server.sh
+```
+
+打开：
+
+```text
+http://127.0.0.1:18086/
+http://<机器人IP>:18086/
+```
+
+开机自启动：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+sudo cp systemd/g1d-remote-control.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now g1d-remote-control.service
+```
+
+检查：
+
+```bash
+systemctl is-enabled g1d-remote-control.service
+systemctl is-active g1d-remote-control.service
+curl -s http://127.0.0.1:18086/health
+```
+
+服务文件 `systemd/g1d-remote-control.service` 默认开启执行模式：
+
+```text
+REMOTE_CONTROL_EXECUTE_ENABLED=1
+```
+
+页面默认调用的 SDK 命令：
+
+```text
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 stop
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 up <speed> <duration>
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 down <speed> <duration>
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 forward <speed> <duration>
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 back <speed> <duration>
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 turn_left <speed> <duration>
+/home/unitree/unitree_sdk2/build/bin/g1d_simple_control eth0 turn_right <speed> <duration>
+```
+
+更多说明见 `docs/G1D_REMOTE_CONTROL.md`。
+
 # 一键开机自启脚本
 在机器人上执行：
 
@@ -532,19 +602,20 @@ cd ~/YOLO_YAN_COORDINATION
 bash scripts/install_autostart_services.sh
 ```
 
-它会把这三个服务复制到 /etc/systemd/system/，执行 daemon-reload，并对下面三个服务执行 enable --now：
+它会把这四个服务复制到 /etc/systemd/system/，执行 daemon-reload，并对下面四个服务执行 enable --now：
 ```text
 cigarette-pose-yolo.service
 g1d-cigarette-visualizer.service
 g1d-pose-adjust.service
+g1d-remote-control.service
 ```
-这三个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。
+这四个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。
 
 # 模型
 - 查看模型标签列表
 ```bash
 python -c "from ultralytics import YOLO; m=YOLO('models/cigarette_yolo11m.pt'); print(m.names)"
 ```
-```json
+```bash
 {0: 'BaiYan', 1: 'Xizi_Liqun', 2: 'LiQunYangGuangZunZhongZhi', 3: 'YangGuangLiQun', 4: 'HuangShan', 5: 'XiongMao'}
 ```

@@ -1,0 +1,22 @@
+[Unit]
+Description=G1-D Browser Remote Control Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+Environment=REMOTE_CONTROL_BIND=0.0.0.0
+Environment=REMOTE_CONTROL_PORT=18086
+Environment=REMOTE_CONTROL_EXECUTE_ENABLED=1
+Environment=UNITREE_SDK_BUILD_DIR=/home/unitree/unitree_sdk2/build
+Environment=DDS_INTERFACE=eth0
+ExecStart=/bin/bash /home/unitree/YOLO_YAN_COORDINATION/scripts/g1d_remote_control_server.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/tmp/g1d_remote_control_service.log
+StandardError=append:/tmp/g1d_remote_control_service.log
+
+[Install]
+WantedBy=multi-user.target
