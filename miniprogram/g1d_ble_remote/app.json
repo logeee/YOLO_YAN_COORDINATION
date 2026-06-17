@@ -1,0 +1,13 @@
+{
+  "pages": [
+    "pages/index/index"
+  ],
+  "window": {
+    "navigationBarTitleText": "G1D 蓝牙遥控",
+    "navigationBarBackgroundColor": "#10181b",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#0d1315"
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

@@ -8,6 +8,7 @@ services=(
   g1d-cigarette-visualizer.service
   g1d-pose-adjust.service
   g1d-remote-control.service
+  g1d-ble-remote.service
 )
 
 for service in "${services[@]}"; do

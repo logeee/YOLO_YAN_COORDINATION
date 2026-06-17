@@ -1,0 +1,25 @@
+[Unit]
+Description=G1-D BLE Remote Control Service
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+Environment=G1D_BLE_ADAPTER=hci0
+Environment=G1D_BLE_LOCAL_NAME=G1D-BLE-RCS-12700
+Environment=G1D_BLE_ADAPTER_ALIAS=G1D-BLE-RCS-12700
+Environment=G1D_BLE_EXECUTE_ENABLED=1
+Environment=G1D_BLE_WATCHDOG_SEC=0.6
+Environment=G1D_BLE_HOLD_DURATION_SEC=600
+Environment=UNITREE_SDK_BUILD_DIR=/home/unitree/unitree_sdk2/build
+Environment=DDS_INTERFACE=eth0
+ExecStart=/bin/bash /home/unitree/YOLO_YAN_COORDINATION/scripts/g1d_ble_remote_server.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/tmp/g1d_ble_remote_service.log
+StandardError=append:/tmp/g1d_ble_remote_service.log
+
+[Install]
+WantedBy=multi-user.target

@@ -24,6 +24,12 @@
 | `18085` | G1-D / 烟盒 3D 相对位置可视化 | `http://<机器人IP>:18085/` |
 | `18086` | G1-D 浏览器遥控页面 | `http://<机器人IP>:18086/` |
 
+无 WiFi 时的蓝牙遥控不占用 HTTP 端口，机器人会广播 BLE 名称：
+
+```text
+G1D-BLE-RCS-12700
+```
+
 思岚底盘传感器可视化是独立仓库，不在本仓库里：
 
 | 端口 | 仓库/目录 | 页面 |
@@ -594,6 +600,74 @@ REMOTE_CONTROL_EXECUTE_ENABLED=1
 
 更多说明见 `docs/G1D_REMOTE_CONTROL.md`。
 
+## G1-D 蓝牙遥控
+
+蓝牙遥控用于没有 WiFi、遥控器又不可用时，通过手机小程序直接连接机器人 BLE。机器人端作为 BLE 外设，小程序作为 BLE 中心设备。
+
+本仓库新增内容：
+
+```text
+scripts/g1d_ble_remote_server.py       机器人 BLE GATT 服务
+scripts/g1d_ble_remote_server.sh       启动脚本
+systemd/g1d-ble-remote.service         开机自启服务
+miniprogram/g1d_ble_remote/            微信小程序示例
+docs/G1D_BLE_REMOTE_CONTROL.md         详细说明
+```
+
+机器人预览模式，先验证手机能连接和写入，不会动机器人：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+bash scripts/g1d_ble_remote_server.sh
+```
+
+执行模式，会真的调用 SDK：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+G1D_BLE_EXECUTE_ENABLED=1 bash scripts/g1d_ble_remote_server.sh
+```
+
+开机自启：
+
+```bash
+cd ~/YOLO_YAN_COORDINATION
+sudo cp systemd/g1d-ble-remote.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now g1d-ble-remote.service
+```
+
+检查：
+
+```bash
+systemctl is-enabled g1d-ble-remote.service
+systemctl is-active g1d-ble-remote.service
+journalctl -u g1d-ble-remote.service -f
+```
+
+重启:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart g1d-ble-remote.service
+ps -ef | grep g1d_ble_remote | grep -v grep
+```
+
+BLE 写入协议很短，适合小程序：
+
+```text
+H forward 0.20
+H back 0.20
+H turn_left 0.20
+H turn_right 0.20
+H column_up 0.05
+H column_down 0.05
+S
+```
+
+长按时小程序每 250ms 发送一次 `H ...`，松手发送 `S`。机器人端默认 0.6 秒没收到心跳就自动 stop。
+
+更多说明见 `docs/G1D_BLE_REMOTE_CONTROL.md`。
+
 # 一键开机自启脚本
 在机器人上执行：
 
@@ -602,14 +676,15 @@ cd ~/YOLO_YAN_COORDINATION
 bash scripts/install_autostart_services.sh
 ```
 
-它会把这四个服务复制到 /etc/systemd/system/，执行 daemon-reload，并对下面四个服务执行 enable --now：
+它会把这五个服务复制到 /etc/systemd/system/，执行 daemon-reload，并对下面五个服务执行 enable --now：
 ```text
 cigarette-pose-yolo.service
 g1d-cigarette-visualizer.service
 g1d-pose-adjust.service
 g1d-remote-control.service
+g1d-ble-remote.service
 ```
-这四个 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。
+这些 .service 文件本身已经都有 [Install] WantedBy=multi-user.target，所以执行后会开机自启并立即启动。
 
 # 模型
 - 查看模型标签列表

@@ -1,0 +1,104 @@
+<view class="page">
+  <view class="status-panel">
+    <view class="status-card">
+      <text class="label">连接</text>
+      <text class="value {{connected ? 'ok' : ''}}">{{connected ? deviceName : validating ? '验证服务' : '未连接'}}</text>
+    </view>
+    <view class="status-card">
+      <text class="label">最后动作</text>
+      <text class="value">{{lastAction}}</text>
+    </view>
+  </view>
+
+  <view class="signal-line {{connected ? 'online' : 'offline'}}">
+    <view class="signal-dot"></view>
+    <text>{{connected ? 'BLE 已连接，可以长按控制' : validating ? '已连接蓝牙，正在验证 G1D 服务' : scanning ? '正在扫描 G1D-BLE-RCS 设备' : 'BLE 未连接'}}</text>
+  </view>
+
+  <view class="toolbar">
+    <view class="tool" bindtap="scanAndConnect">{{scanning ? '扫描中' : connected ? '重新扫描' : '扫描设备'}}</view>
+    <view class="tool danger" bindtap="sendStop">急停</view>
+  </view>
+
+  <view class="device-list" wx:if="{{candidateDevices.length}}">
+    <view class="device-title">
+      <text>扫描到的 G1D-BLE-RCS 设备</text>
+      <text class="device-hint">点击设备连接</text>
+    </view>
+    <view class="device-item" wx:for="{{candidateDevices}}" wx:key="deviceId" data-device-id="{{item.deviceId}}" bindtap="connectCandidate">
+      <view>
+        <text class="device-name">{{item.name}}</text>
+        <text class="device-rssi">RSSI {{item.RSSI}}</text>
+      </view>
+      <text class="device-action">连接</text>
+    </view>
+  </view>
+
+  <view class="speed-panel">
+    <view class="speed-row">
+      <text>速度</text>
+      <text>{{speedText}}</text>
+    </view>
+    <slider min="0" max="100" value="{{speedValue}}" activeColor="#69d5e5" backgroundColor="#334247" bindchange="onSpeedChange" />
+  </view>
+
+  <view class="control-area">
+    <view class="control-row single">
+      <view class="pad {{activeAction === 'forward' ? 'is-active' : ''}}"
+        bindtouchstart="holdForward"
+        bindtouchend="releaseHold"
+        bindtouchcancel="releaseHold">
+        <text class="pad-symbol">↑</text>
+        <text>前进</text>
+      </view>
+    </view>
+    <view class="control-row middle">
+      <view class="pad {{activeAction === 'turn_left' ? 'is-active' : ''}}"
+        bindtouchstart="holdLeft"
+        bindtouchend="releaseHold"
+        bindtouchcancel="releaseHold">
+        <text class="pad-symbol">↺</text>
+        <text>左转</text>
+      </view>
+      <view class="center-dot"></view>
+      <view class="pad {{activeAction === 'turn_right' ? 'is-active' : ''}}"
+        bindtouchstart="holdRight"
+        bindtouchend="releaseHold"
+        bindtouchcancel="releaseHold">
+        <text class="pad-symbol">↻</text>
+        <text>右转</text>
+      </view>
+    </view>
+    <view class="control-row single">
+      <view class="pad {{activeAction === 'back' ? 'is-active' : ''}}"
+        bindtouchstart="holdBack"
+        bindtouchend="releaseHold"
+        bindtouchcancel="releaseHold">
+        <text class="pad-symbol">↓</text>
+        <text>后退</text>
+      </view>
+    </view>
+  </view>
+
+  <view class="column-area">
+    <view class="column {{activeAction === 'column_up' ? 'is-active' : ''}}"
+      bindtouchstart="holdUp"
+      bindtouchend="releaseHold"
+      bindtouchcancel="releaseHold">
+      <text class="pad-symbol">⇧</text>
+      <text>升</text>
+    </view>
+    <view class="column {{activeAction === 'column_down' ? 'is-active' : ''}}"
+      bindtouchstart="holdDown"
+      bindtouchend="releaseHold"
+      bindtouchcancel="releaseHold">
+      <text class="pad-symbol">⇩</text>
+      <text>降</text>
+    </view>
+  </view>
+
+  <view class="log {{logs.length ? '' : 'empty'}}">
+    <text wx:if="{{!logs.length}}">等待操作</text>
+    <text wx:for="{{logs}}" wx:key="index">{{item}}</text>
+  </view>
+</view>
