@@ -189,7 +189,7 @@ hispeed_state.y -> column_raw_extension_mm -> column_extension_mm -> LZ_mt_Joint
   - `LZ_mt_Joint`: `0 ~ 210mm`
   - `LZ_it_Joint`: `0 ~ 210mm`
   - 页面默认总展开量 `420mm`，也就是两节都展开到上限。
-- 2026-06-17 做过一次现场标定：实体最高位时 DDS `hispeed_state.y` 约为 `246.9mm`，因此页面默认把 raw `0.0 ~ 246.9mm` 线性映射到 URDF `0.0 ~ 420.0mm`。
+- 2026-06-17 做过一次现场标定：`g1d_height_control eth0 -1/0/1` 读到的 DDS `hispeed_state.y` 约为 `-185.1mm / 0mm / 246.9mm`，因此页面默认把 raw `-185.1 ~ 246.9mm` 线性映射到 URDF `0.0 ~ 420.0mm`。
 - `/api/robot_state` 会同时返回：
   - `column_raw_extension_mm`：DDS 原始高度读数。
   - `column_extension_mm`：标定后用于驱动 URDF 的显示高度。
@@ -197,7 +197,7 @@ hispeed_state.y -> column_raw_extension_mm -> column_extension_mm -> LZ_mt_Joint
 - 如需临时改标定参数，可以设置环境变量后重启 `g1d-cigarette-visualizer.service`：
 
 ```bash
-COLUMN_RAW_MIN_MM=0.0
+COLUMN_RAW_MIN_MM=-185.1
 COLUMN_RAW_MAX_MM=246.9
 COLUMN_VISUAL_MAX_MM=420.0
 ```

@@ -27,7 +27,7 @@ DEFAULT_DDS_INTERFACE = "eth0"
 DEFAULT_DDS_LOWSTATE_TOPIC = "rt/lowstate"
 DEFAULT_DDS_HISPEED_TOPIC = "rt/hispeed_state"
 DEFAULT_UNITREE_SDK2PY_PATH = "/home/unitree/unitree_sdk2_python"
-DEFAULT_COLUMN_RAW_MIN_MM = 0.0
+DEFAULT_COLUMN_RAW_MIN_MM = -185.1
 DEFAULT_COLUMN_RAW_MAX_MM = 246.9
 DEFAULT_COLUMN_VISUAL_MAX_MM = 420.0
 VIEWER_DIR = Path(__file__).resolve().parents[1] / "visualization" / "g1d_cigarette_viewer"
@@ -249,7 +249,7 @@ class _DdsStateReader:
                 "raw_max_mm": round(self.column_raw_max_mm, 1),
                 "visual_min_mm": 0.0,
                 "visual_max_mm": round(self.column_visual_max_mm, 1),
-                "sample_note": "2026-06-17 high position sampled at raw 246.9mm; SDK down/up did not expose a lower endpoint during automatic calibration",
+                "sample_note": "2026-06-17 g1d_height_control sampled raw min -185.1mm, target-zero near 0mm, raw max 246.9mm",
             },
             "joints": joints,
             "joint_states": {

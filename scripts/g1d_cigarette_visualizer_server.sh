@@ -29,7 +29,7 @@ exec "${PYTHON:-python3}" scripts/g1d_cigarette_visualizer_server.py \
   --dds-hispeed-topic "${DDS_HISPEED_TOPIC:-rt/hispeed_state}" \
   --unitree-sdk2py-path "${UNITREE_SDK2PY_PATH:-/home/unitree/unitree_sdk2_python}" \
   --joint-states-topic "${JOINT_STATES_TOPIC:-/joint_states}" \
-  --column-raw-min-mm "${COLUMN_RAW_MIN_MM:-0.0}" \
+  --column-raw-min-mm "${COLUMN_RAW_MIN_MM:--185.1}" \
   --column-raw-max-mm "${COLUMN_RAW_MAX_MM:-246.9}" \
   --column-visual-max-mm "${COLUMN_VISUAL_MAX_MM:-420.0}" \
   --timeout-sec "${VISUALIZER_TIMEOUT_SEC:-2.0}" \
