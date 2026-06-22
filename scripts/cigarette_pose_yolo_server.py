@@ -52,10 +52,17 @@ class ServerConfig:
     yolo_imgsz: int = 640
     yolo_mask_threshold: float = 0.5
     focal_px: float = 260.0
+    fx: float | None = None
+    fy: float | None = None
+    cx: float = 320.0
+    cy: float = 240.0
+    runtime_config_path: Path = Path("config/cigarette_pose_runtime.json")
     warmup: bool = True
 
 
 POSE_LOCK = threading.Lock()
+RUNTIME_CONFIG_LOCK = threading.Lock()
+RUNTIME_INTRINSICS: dict[str, float] | None = None
 REQUEST_COUNTER = 0
 REQUEST_COUNTER_LOCK = threading.Lock()
 IMAGE_CLIENTS: dict[str, Any] = {}
@@ -95,6 +102,10 @@ OVERRIDE_TYPES: dict[str, type] = {
     "known_range_mm": float,
     "lens_glass_to_optical_center_mm": float,
     "focal_px": float,
+    "fx": float,
+    "fy": float,
+    "cx": float,
+    "cy": float,
     "yolo_conf": float,
     "yolo_imgsz": int,
     "yolo_mask_threshold": float,
@@ -231,6 +242,114 @@ def _request_overrides(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return values
 
 
+def _server_fx(config: ServerConfig) -> float:
+    return float(config.fx if config.fx is not None else config.focal_px)
+
+
+def _server_fy(config: ServerConfig) -> float:
+    return float(config.fy if config.fy is not None else config.focal_px)
+
+
+def _server_intrinsics(config: ServerConfig) -> dict[str, float]:
+    return {
+        "focal_px": float(config.focal_px),
+        "fx": _server_fx(config),
+        "fy": _server_fy(config),
+        "cx": float(config.cx),
+        "cy": float(config.cy),
+    }
+
+
+def _validate_intrinsics(values: dict[str, Any], base: dict[str, float] | None = None) -> dict[str, float]:
+    base_values = base or {"focal_px": 260.0, "fx": 260.0, "fy": 260.0, "cx": 320.0, "cy": 240.0}
+    focal_px = float(values.get("focal_px", base_values.get("focal_px", 260.0)))
+    fx = float(values.get("fx", focal_px if "focal_px" in values else base_values.get("fx", focal_px)))
+    fy = float(values.get("fy", focal_px if "focal_px" in values else base_values.get("fy", focal_px)))
+    cx = float(values.get("cx", base_values.get("cx", 320.0)))
+    cy = float(values.get("cy", base_values.get("cy", 240.0)))
+    if fx <= 0.0 or fy <= 0.0 or focal_px <= 0.0:
+        raise ValueError("focal_px/fx/fy must be positive")
+    return {
+        "focal_px": float(focal_px),
+        "fx": float(fx),
+        "fy": float(fy),
+        "cx": float(cx),
+        "cy": float(cy),
+    }
+
+
+def _runtime_intrinsics() -> dict[str, float] | None:
+    with RUNTIME_CONFIG_LOCK:
+        return dict(RUNTIME_INTRINSICS) if RUNTIME_INTRINSICS is not None else None
+
+
+def _effective_intrinsics(config: ServerConfig) -> dict[str, float]:
+    runtime = _runtime_intrinsics()
+    if runtime is not None:
+        return runtime
+    return _server_intrinsics(config)
+
+
+def _request_intrinsics(config: ServerConfig, overrides: dict[str, Any]) -> dict[str, float]:
+    names = {"focal_px", "fx", "fy", "cx", "cy"}
+    values = {name: overrides[name] for name in names if name in overrides}
+    return _validate_intrinsics(values, base=_effective_intrinsics(config))
+
+
+def _runtime_config_payload(config: ServerConfig) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "config_path": str(config.runtime_config_path),
+        "startup_defaults": _server_intrinsics(config),
+        "runtime_defaults": _runtime_intrinsics(),
+        "effective_defaults": _effective_intrinsics(config),
+        "note": "pose/xyz/debug requests can still override these values with fx/fy/cx/cy query or JSON fields",
+    }
+
+
+def _load_runtime_intrinsics(config: ServerConfig) -> None:
+    path = config.runtime_config_path
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"runtime config must be a JSON object: {path}")
+    raw = data.get("intrinsics", data)
+    if not isinstance(raw, dict):
+        raise ValueError(f"runtime intrinsics must be a JSON object: {path}")
+    values = _validate_intrinsics(raw, base=_server_intrinsics(config))
+    with RUNTIME_CONFIG_LOCK:
+        global RUNTIME_INTRINSICS
+        RUNTIME_INTRINSICS = values
+
+
+def _save_runtime_intrinsics(config: ServerConfig, intrinsics: dict[str, float]) -> None:
+    path = config.runtime_config_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"intrinsics": intrinsics, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    with RUNTIME_CONFIG_LOCK:
+        global RUNTIME_INTRINSICS
+        RUNTIME_INTRINSICS = dict(intrinsics)
+
+
+def _serve_intrinsics_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
+    if handler.command == "GET":
+        _json_response(handler, 200, _runtime_config_payload(config))
+        return
+    overrides = _request_overrides(handler)
+    names = {"focal_px", "fx", "fy", "cx", "cy"}
+    values = {name: overrides[name] for name in names if name in overrides}
+    if not values:
+        _json_response(handler, 400, {"ok": False, "error": "provide at least one of focal_px/fx/fy/cx/cy"})
+        return
+    intrinsics = _validate_intrinsics(values, base=_effective_intrinsics(config))
+    _save_runtime_intrinsics(config, intrinsics)
+    _json_response(handler, 200, _runtime_config_payload(config))
+
+
 def _coerce_g1d_adjust_value(name: str, value: Any) -> Any:
     target_type = G1D_ADJUST_PROXY_TYPES[name]
     if target_type is bool:
@@ -358,6 +477,7 @@ def _build_pose_args(
     right_image: Path,
     overrides: dict[str, Any],
 ) -> argparse.Namespace:
+    intrinsics = _request_intrinsics(config, overrides)
     argv = [
         "--mode",
         "yolo",
@@ -376,11 +496,21 @@ def _build_pose_args(
         "--yolo-mask-threshold",
         str(config.yolo_mask_threshold),
         "--focal-px",
-        str(config.focal_px),
+        str(intrinsics["focal_px"]),
+        "--fx",
+        str(intrinsics["fx"]),
+        "--fy",
+        str(intrinsics["fy"]),
+        "--cx",
+        str(intrinsics["cx"]),
+        "--cy",
+        str(intrinsics["cy"]),
         "--out-dir",
         str(out_dir),
     ]
     for name, value in overrides.items():
+        if name in {"focal_px", "fx", "fy", "cx", "cy"}:
+            continue
         _append_arg(argv, name, value)
     return build_arg_parser().parse_args(argv)
 
@@ -518,6 +648,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "center_above_xyz_mm": result.get("center_above_xyz_mm"),
         "center_above": result.get("center_above"),
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
+        "intrinsics_assumption": result.get("intrinsics_assumption"),
         "left_depth_mm": result.get("left_depth_mm"),
         "optical_axis_depth_mm": result.get("optical_axis_depth_mm"),
         "selected_orientation": result.get("selected_orientation"),
@@ -639,12 +770,14 @@ def _project_xyz_to_px(payload: dict[str, Any], xyz_mm: Any) -> tuple[int, int] 
         return None
     try:
         focal_px = float(intrinsics.get("focal_px"))
+        fx = float(intrinsics.get("fx", focal_px))
+        fy = float(intrinsics.get("fy", focal_px))
         cx = float(intrinsics.get("cx"))
         cy = float(intrinsics.get("cy"))
     except Exception:
         return None
-    u = focal_px * x_mm / z_mm + cx
-    v = focal_px * y_mm / z_mm + cy
+    u = fx * x_mm / z_mm + cx
+    v = fy * y_mm / z_mm + cy
     return int(round(u)), int(round(v))
 
 
@@ -750,7 +883,7 @@ def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
         _draw_text(image, "C=center_above  H=head_1/5_above  N=near_edge_midpoint", (12, 28), (255, 255, 255), scale=0.55)
         cv2.putText(
             image,
-            "Projected from /xyz using u=fx*x/z+cx, v=fx*y/z+cy",
+            "Projected from /xyz using u=fx*x/z+cx, v=fy*y/z+cy",
             (12, image.shape[0] - 14),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -760,7 +893,7 @@ def _draw_projected_points_overlay(payload: dict[str, Any], path: str) -> bytes:
         )
         cv2.putText(
             image,
-            "Projected from /xyz using u=fx*x/z+cx, v=fx*y/z+cy",
+            "Projected from /xyz using u=fx*x/z+cx, v=fy*y/z+cy",
             (12, image.shape[0] - 14),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -1054,6 +1187,74 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
         _summary_tile("服务耗时", _fmt_number(_nested(payload, "server", "elapsed_ms"), " ms", 1), "本次拍照+推理+计算"),
     ]
     return '<div class="summary-grid">' + "".join(tiles) + "</div>"
+
+
+def _debug_intrinsics_from_payload(payload: dict[str, Any]) -> dict[str, float]:
+    intrinsics = payload.get("intrinsics_assumption")
+    if not isinstance(intrinsics, dict):
+        intrinsics = {}
+
+    def read_float(name: str, fallback: float) -> float:
+        try:
+            return float(intrinsics.get(name, fallback))
+        except Exception:
+            return float(fallback)
+
+    focal = read_float("focal_px", 260.0)
+    return {
+        "fx": read_float("fx", focal),
+        "fy": read_float("fy", focal),
+        "cx": read_float("cx", 320.0),
+        "cy": read_float("cy", 240.0),
+    }
+
+
+def _debug_intrinsics_query(payload: dict[str, Any]) -> str:
+    intrinsics = _debug_intrinsics_from_payload(payload)
+    return urlencode({name: f"{value:.6g}" for name, value in intrinsics.items()}) + "&"
+
+
+def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
+    intrinsics = _debug_intrinsics_from_payload(payload)
+    fields = [
+        ("fx", "debugFxInput", "fx"),
+        ("fy", "debugFyInput", "fy"),
+        ("cx", "debugCxInput", "cx"),
+        ("cy", "debugCyInput", "cy"),
+    ]
+    inputs = "".join(
+        (
+            f'<label>{label}'
+            f'<input id="{html_lib.escape(input_id)}" data-intrinsic="{html_lib.escape(name)}" '
+            f'type="number" step="0.01" value="{intrinsics[name]:.2f}">'
+            "</label>"
+        )
+        for name, input_id, label in fields
+    )
+    current = (
+        f"当前 API 默认 / 本次计算："
+        f"fx={intrinsics['fx']:.2f}, fy={intrinsics['fy']:.2f}, "
+        f"cx={intrinsics['cx']:.2f}, cy={intrinsics['cy']:.2f}"
+    )
+    return (
+        '<div class="debug-intrinsics-panel">'
+        '<div class="debug-intrinsics-main">'
+        '<strong>相机内参</strong>'
+        f'<span id="debugIntrinsicsCurrent">{html_lib.escape(current)}</span>'
+        '<button id="debugSaveCalibratedIntrinsics" class="button primary-button" type="button">一键使用标定内参</button>'
+        '<span id="debugIntrinsicsSaveStatus"></span>'
+        "</div>"
+        '<details class="debug-intrinsics-advanced">'
+        '<summary>高级：手动修改或恢复旧默认</summary>'
+        '<div class="debug-intrinsics-fields">'
+        f"{inputs}"
+        '<button id="debugSaveDefaultIntrinsics" class="button primary-alt-button" type="button">保存手动值为 API 默认</button>'
+        '<button id="debugUseDefaultIntrinsics" class="button" type="button">恢复旧默认 260</button>'
+        '<span>高级设置保存后，后续 /xyz、/pose 不带参数也会使用这里的默认值。</span>'
+        "</div>"
+        "</details>"
+        "</div>"
+    )
 
 
 def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
@@ -1376,6 +1577,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     cache_token = quote(f"{request_id_raw}_{time.time_ns()}")
     requested_label_raw = str(payload.get("requested_yolo_label") or "")
     label_query = f"label={quote(requested_label_raw)}&" if requested_label_raw else ""
+    intrinsics_query = _debug_intrinsics_query(payload)
+    rerun_query = f"{label_query}{intrinsics_query}"
     if request_id_raw:
         image_query = f"?request_id={quote(request_id_raw)}&t={cache_token}"
     else:
@@ -1396,9 +1599,9 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
             f'<section><h2>右目全部候选</h2><img src="{image_src("/latest/right_candidates.jpg")}" alt="right candidates"></section>',
         ]
     )
-    run_again_href = html_lib.escape(f"/debug?{label_query}t={cache_token}")
-    pose_href = html_lib.escape(f"/pose?{label_query}t={cache_token}")
-    xyz_href = html_lib.escape(f"/xyz?{label_query}t={cache_token}")
+    run_again_href = html_lib.escape(f"/debug?{rerun_query}t={cache_token}")
+    pose_href = html_lib.escape(f"/pose?{rerun_query}t={cache_token}")
+    xyz_href = html_lib.escape(f"/xyz?{rerun_query}t={cache_token}")
     status_line = html_lib.escape(
         f"状态={ok_text} 请求={request_id} 耗时={elapsed_ms}ms 错误={_error_cn(payload.get('error'))}"
     )
@@ -1417,6 +1620,15 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .status {{ margin: 12px 0; }}
     .debug-label-control {{ display: inline-flex; align-items: center; gap: 6px; color: #243b53; font-weight: 700; }}
     .debug-label-control select {{ padding: 7px 9px; border: 1px solid #8795a1; font: inherit; background: #fff; }}
+    .debug-intrinsics-panel {{ margin: 10px 0 12px; padding: 10px; border: 1px solid #d9e2ec; border-radius: 6px; background: #f8fbff; }}
+    .debug-intrinsics-main {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+    .debug-intrinsics-panel strong {{ margin-right: 4px; color: #102a43; }}
+    .debug-intrinsics-advanced {{ margin-top: 8px; }}
+    .debug-intrinsics-advanced summary {{ cursor: pointer; color: #486581; font-weight: 700; }}
+    .debug-intrinsics-fields {{ display: flex; align-items: end; gap: 10px; flex-wrap: wrap; margin-top: 8px; }}
+    .debug-intrinsics-panel label {{ display: grid; gap: 3px; color: #52606d; font-size: 12px; font-weight: 700; }}
+    .debug-intrinsics-panel input {{ width: 84px; padding: 6px 8px; border: 1px solid #8795a1; font: inherit; background: #fff; color: #102a43; }}
+    .debug-intrinsics-panel span {{ color: #627d98; font-size: 12px; }}
     .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 18px; }}
     .summary-tile {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; min-height: 76px; }}
     .summary-label {{ color: #52606d; font-size: 13px; margin-bottom: 6px; }}
@@ -1452,20 +1664,55 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     <a id="debugPoseLink" class="button" href="{pose_href}">完整 JSON</a>
     <a id="debugXyzLink" class="button" href="{xyz_href}">坐标 JSON</a>
   </header>
+  {_debug_intrinsics_controls_html(payload)}
   <script>
     (() => {{
       const select = document.getElementById("debugLabelSelect");
       const runAgain = document.getElementById("debugRunAgainLink");
       const pose = document.getElementById("debugPoseLink");
       const xyz = document.getElementById("debugXyzLink");
+      const intrinsicInputs = Array.from(document.querySelectorAll("[data-intrinsic]"));
+      const saveCalibratedButton = document.getElementById("debugSaveCalibratedIntrinsics");
+      const defaultButton = document.getElementById("debugUseDefaultIntrinsics");
+      const saveDefaultButton = document.getElementById("debugSaveDefaultIntrinsics");
+      const saveStatus = document.getElementById("debugIntrinsicsSaveStatus");
+      const currentIntrinsics = document.getElementById("debugIntrinsicsCurrent");
+      const calibratedIntrinsics = {{ fx: "271.24", fy: "271.22", cx: "323.97", cy: "249.90" }};
+      const oldDefaultIntrinsics = {{ fx: "260.00", fy: "260.00", cx: "320.00", cy: "240.00" }};
+      const readIntrinsicsObject = () => {{
+        const values = {{}};
+        for (const input of intrinsicInputs) {{
+          const name = input.dataset.intrinsic;
+          const value = Number(input.value);
+          if (name && Number.isFinite(value)) values[name] = value;
+        }}
+        return values;
+      }};
+      const readIntrinsicsQuery = () => {{
+        const params = new URLSearchParams();
+        const values = readIntrinsicsObject();
+        for (const [name, value] of Object.entries(values)) {{
+          params.set(name, String(value));
+        }}
+        const text = params.toString();
+        return text ? `${{text}}&` : "";
+      }};
+      const setIntrinsics = (values) => {{
+        for (const input of intrinsicInputs) {{
+          const name = input.dataset.intrinsic;
+          if (Object.prototype.hasOwnProperty.call(values, name)) input.value = values[name];
+        }}
+        updateLinks();
+      }};
       const updateLinks = () => {{
         const label = select && select.value ? `label=${{encodeURIComponent(select.value)}}&` : "";
+        const intrinsics = readIntrinsicsQuery();
         const adjustLabel = document.getElementById("g1dAdjustCurrentLabel");
         if (adjustLabel) adjustLabel.textContent = select && select.value ? select.value : "自动";
         const t = Date.now();
-        if (runAgain) runAgain.href = `/debug?${{label}}t=${{t}}`;
-        if (pose) pose.href = `/pose?${{label}}t=${{t}}`;
-        if (xyz) xyz.href = `/xyz?${{label}}t=${{t}}`;
+        if (runAgain) runAgain.href = `/debug?${{label}}${{intrinsics}}t=${{t}}`;
+        if (pose) pose.href = `/pose?${{label}}${{intrinsics}}t=${{t}}`;
+        if (xyz) xyz.href = `/xyz?${{label}}${{intrinsics}}t=${{t}}`;
       }};
       const copyHtml = (doc, id) => {{
         const current = document.getElementById(id);
@@ -1506,7 +1753,48 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           updateLinks();
         }}
       }};
+      const saveDefaultIntrinsics = async (button) => {{
+        if (!button) return;
+        const values = readIntrinsicsObject();
+        for (const name of ["fx", "fy", "cx", "cy"]) {{
+          if (!Number.isFinite(values[name])) {{
+            if (saveStatus) saveStatus.textContent = `${{name}} 不是有效数字`;
+            return;
+          }}
+        }}
+        button.disabled = true;
+        if (saveStatus) saveStatus.textContent = "保存中...";
+        try {{
+          const res = await fetch("/config/intrinsics", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify(values),
+            cache: "no-store",
+          }});
+          const payload = await res.json();
+          if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
+          const effective = payload.effective_defaults || {{}};
+          if (currentIntrinsics && Number.isFinite(Number(effective.fx))) {{
+            currentIntrinsics.textContent = `当前 API 默认 / 本次计算：fx=${{Number(effective.fx).toFixed(2)}}, fy=${{Number(effective.fy).toFixed(2)}}, cx=${{Number(effective.cx).toFixed(2)}}, cy=${{Number(effective.cy).toFixed(2)}}`;
+          }}
+          if (saveStatus) saveStatus.textContent = "已设为 API 默认";
+        }} catch (err) {{
+          if (saveStatus) saveStatus.textContent = `保存失败: ${{err}}`;
+        }} finally {{
+          button.disabled = false;
+        }}
+      }};
       if (select) select.addEventListener("change", updateLinks);
+      for (const input of intrinsicInputs) input.addEventListener("input", updateLinks);
+      if (saveCalibratedButton) saveCalibratedButton.addEventListener("click", async () => {{
+        setIntrinsics(calibratedIntrinsics);
+        await saveDefaultIntrinsics(saveCalibratedButton);
+      }});
+      if (defaultButton) defaultButton.addEventListener("click", async () => {{
+        setIntrinsics(oldDefaultIntrinsics);
+        await saveDefaultIntrinsics(defaultButton);
+      }});
+      if (saveDefaultButton) saveDefaultButton.addEventListener("click", () => saveDefaultIntrinsics(saveDefaultButton));
       if (runAgain) runAgain.addEventListener("click", runDebugRequest);
       updateLinks();
     }})();
@@ -1565,12 +1853,17 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "yolo_model": config.yolo_model,
         "requested_device": config.yolo_device,
         "resolved_device": resolved_device,
+        "intrinsics_defaults": _effective_intrinsics(config),
+        "intrinsics_startup_defaults": _server_intrinsics(config),
+        "intrinsics_runtime_defaults": _runtime_intrinsics(),
+        "intrinsics_effective_defaults": _effective_intrinsics(config),
         "yolo_class_names": _yolo_class_names(config.yolo_model),
         "cuda_available": cuda_available,
         "torch_cuda": torch_cuda,
         "model_cache_size": len(YOLO_MODEL_CACHE),
         "endpoints": [
             "/health",
+            "/config/intrinsics",
             "/pose",
             "/xyz",
             "/debug/left_points.jpg",
@@ -1639,6 +1932,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 if path == "/health":
                     _json_response(self, 200, _health_payload(config))
                     return
+                if path == "/config/intrinsics":
+                    _serve_intrinsics_config(self, config)
+                    return
                 if path == "/g1d/adjust":
                     _serve_g1d_adjust(self)
                     return
@@ -1688,6 +1984,16 @@ def build_arg_parser_server() -> argparse.ArgumentParser:
     parser.add_argument("--yolo-imgsz", type=int, default=640)
     parser.add_argument("--yolo-mask-threshold", type=float, default=0.5)
     parser.add_argument("--focal-px", type=float, default=260.0)
+    parser.add_argument("--fx", type=float, help="default left camera fx in pixels; defaults to --focal-px")
+    parser.add_argument("--fy", type=float, help="default left camera fy in pixels; defaults to --focal-px")
+    parser.add_argument("--cx", type=float, default=320.0)
+    parser.add_argument("--cy", type=float, default=240.0)
+    parser.add_argument(
+        "--runtime-config",
+        type=Path,
+        default=Path("config/cigarette_pose_runtime.json"),
+        help="JSON file used for runtime defaults changed from the debug page",
+    )
     parser.add_argument("--no-warmup", action="store_true", help="skip model/GPU warmup at service startup")
     return parser
 
@@ -1704,9 +2010,15 @@ def main() -> int:
         yolo_imgsz=args.yolo_imgsz,
         yolo_mask_threshold=args.yolo_mask_threshold,
         focal_px=args.focal_px,
+        fx=args.fx,
+        fy=args.fy,
+        cx=args.cx,
+        cy=args.cy,
+        runtime_config_path=args.runtime_config,
         warmup=not args.no_warmup,
     )
     config.out_root.mkdir(parents=True, exist_ok=True)
+    _load_runtime_intrinsics(config)
     if config.warmup:
         started = time.perf_counter()
         _warmup(config)

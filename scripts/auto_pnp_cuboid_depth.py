@@ -403,9 +403,12 @@ def solve_depth(
     focal_px: float,
     cx: float,
     cy: float,
+    fy_px: float | None = None,
 ) -> dict[str, Any]:
     obj = object_points(width_m, height_m)
-    k = np.asarray([[focal_px, 0.0, cx], [0.0, focal_px, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
+    fx_px = float(focal_px)
+    fy_px = float(fy_px if fy_px is not None else focal_px)
+    k = np.asarray([[fx_px, 0.0, cx], [0.0, fy_px, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
     dist = np.zeros((5, 1), dtype=np.float64)
     ok, rvec, tvec = cv2.solvePnP(obj, points.astype(np.float64), k, dist, flags=cv2.SOLVEPNP_IPPE)
     if not ok:
@@ -489,7 +492,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-sec", type=float, default=5.0)
     parser.add_argument("--object-width-m", type=float, default=0.149)
     parser.add_argument("--object-height-m", type=float, default=0.093)
-    parser.add_argument("--focal-px", type=float, default=260.0, help="head camera focal length in pixels")
+    parser.add_argument("--focal-px", type=float, default=260.0, help="fallback head camera focal length in pixels")
+    parser.add_argument("--fx", type=float, help="head camera fx in pixels; defaults to --focal-px")
+    parser.add_argument("--fy", type=float, help="head camera fy in pixels; defaults to --focal-px")
     parser.add_argument("--cx", type=float, default=320.0)
     parser.add_argument("--cy", type=float, default=240.0)
     parser.add_argument("--left-roi", type=parse_roi, default=None, help="optional x1,y1,x2,y2")
@@ -515,9 +520,10 @@ def main() -> int:
             det.points,
             args.object_width_m,
             args.object_height_m,
-            args.focal_px,
+            args.fx if args.fx is not None else args.focal_px,
             args.cx,
             args.cy,
+            fy_px=args.fy if args.fy is not None else args.focal_px,
         )
         for side, det in detections.items()
     }
@@ -526,7 +532,13 @@ def main() -> int:
 
     result = {
         "object_top_size_m": [args.object_width_m, args.object_height_m],
-        "intrinsics_assumption": {"focal_px": args.focal_px, "cx": args.cx, "cy": args.cy},
+        "intrinsics_assumption": {
+            "focal_px": args.focal_px,
+            "fx": args.fx if args.fx is not None else args.focal_px,
+            "fy": args.fy if args.fy is not None else args.focal_px,
+            "cx": args.cx,
+            "cy": args.cy,
+        },
         "point_order": ["top_left", "top_right", "bottom_right", "bottom_left"],
         "views": {},
         "estimated_camera_mid_top_center_depth_m": float(

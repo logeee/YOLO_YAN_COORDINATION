@@ -8,6 +8,7 @@
 - 支持类别：`XiongMao`、`Xizi_Liqun`
 - 默认设备：Jetson GPU `cuda:0`
 - 默认服务地址：`0.0.0.0:18081`
+- 推荐标定内参：`fx=271.24`、`fy=271.22`、`cx=323.97`、`cy=249.90`
 - 坐标系：`left_camera_optical`
   - `+X` 图像右方
   - `+Y` 图像下方
@@ -214,6 +215,95 @@ requested_device
 resolved_device
 cuda_available
 ```
+
+## 相机内参设置
+
+当前推荐使用左目相机标定内参：
+
+```text
+fx = 271.24
+fy = 271.22
+cx = 323.97
+cy = 249.90
+```
+
+### 页面一键设置
+
+打开 YOLO debug 页面：
+
+```text
+http://<机器人IP>:18081/debug
+```
+
+在页面顶部找到 `相机内参`，点击：
+
+```text
+一键使用标定内参
+```
+
+点击后会把上面的 `fx/fy/cx/cy` 保存成 API 默认值。之后普通调用 `/xyz`、`/pose` 不需要再带内参参数。
+
+### API 设置默认内参
+
+也可以直接用 API 设置默认内参：
+
+```bash
+curl -s -X POST "http://127.0.0.1:18081/config/intrinsics" \
+  -H "Content-Type: application/json" \
+  -d '{"fx":271.24,"fy":271.22,"cx":323.97,"cy":249.90}'
+```
+
+外部电脑访问机器人时，把 `127.0.0.1` 换成机器人 IP：
+
+```bash
+curl -s -X POST "http://<机器人IP>:18081/config/intrinsics" \
+  -H "Content-Type: application/json" \
+  -d '{"fx":271.24,"fy":271.22,"cx":323.97,"cy":249.90}'
+```
+
+查看当前生效默认内参：
+
+```bash
+curl -s http://127.0.0.1:18081/config/intrinsics
+```
+
+也可以看 `/health` 里的字段：
+
+```text
+intrinsics_defaults
+intrinsics_runtime_defaults
+intrinsics_effective_defaults
+```
+
+运行时默认内参会保存到机器人本地：
+
+```text
+/home/unitree/YOLO_YAN_COORDINATION/config/cigarette_pose_runtime.json
+```
+
+### 单次调用临时覆盖内参
+
+如果只想这一次请求使用某组内参，不修改 API 默认值，可以直接在 `/xyz` 或 `/pose` 后面带参数：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?fx=271.24&fy=271.22&cx=323.97&cy=249.90"
+```
+
+带标签一起调用：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=XiongMao&fx=271.24&fy=271.22&cx=323.97&cy=249.90"
+```
+
+POST 也支持：
+
+```bash
+curl -s -X POST "http://127.0.0.1:18081/xyz" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"XiongMao","fx":271.24,"fy":271.22,"cx":323.97,"cy":249.90}'
+```
+
+返回 JSON 里的 `intrinsics_assumption` 是本次计算实际使用的内参。
 
 ## 取坐标
 

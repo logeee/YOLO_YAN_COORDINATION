@@ -333,9 +333,11 @@ yolo-conf    = 0.15
 yolo-imgsz   = 640
 yolo-device  = auto
 orientation  = auto_by_stereo
-focal-px     = 260.0
-cx           = 320.0
-cy           = 240.0
+focal-px     = 260.0  # fallback；未设置 fx/fy 时使用
+fx           = 默认跟随 focal-px；推荐标定值 271.24
+fy           = 默认跟随 focal-px；推荐标定值 271.22
+cx           = 默认 320.0；推荐标定值 323.97
+cy           = 默认 240.0；推荐标定值 249.90
 stereo-baseline-mm = 60.0
 ```
 
@@ -550,6 +552,87 @@ curl -s "http://127.0.0.1:18081/xyz?yolo_select=score&yolo_index=0"
 
 也就是从左目 YOLO 候选里按 `score` 排序，选择第 0 个候选的上表面中心点来算 PnP/XYZ。
 
+## 相机内参 fx/fy/cx/cy
+
+当前推荐的左目相机标定内参是：
+
+```text
+fx = 271.24
+fy = 271.22
+cx = 323.97
+cy = 249.90
+```
+
+服务启动时仍保留旧的 fallback：`focal_px=260.0, cx=320.0, cy=240.0`。现场建议在 debug 页面或配置 API 里把推荐内参保存为运行时默认值。
+
+### 页面设置
+
+打开：
+
+```text
+http://<机器人IP>:18081/debug
+```
+
+页面顶部 `相机内参` 区域点击：
+
+```text
+一键使用标定内参
+```
+
+保存成功后，后续 `/xyz`、`/pose` 即使不带参数，也会默认用这组 `fx/fy/cx/cy`。
+
+### API 设置默认值
+
+```bash
+curl -s -X POST "http://127.0.0.1:18081/config/intrinsics" \
+  -H "Content-Type: application/json" \
+  -d '{"fx":271.24,"fy":271.22,"cx":323.97,"cy":249.90}'
+```
+
+查看当前默认值：
+
+```bash
+curl -s http://127.0.0.1:18081/config/intrinsics
+```
+
+也可以在 `/health` 里看：
+
+```text
+intrinsics_defaults
+intrinsics_runtime_defaults
+intrinsics_effective_defaults
+```
+
+运行时默认值会保存到：
+
+```text
+/home/unitree/YOLO_YAN_COORDINATION/config/cigarette_pose_runtime.json
+```
+
+### 单次请求临时覆盖
+
+下面这种只影响本次请求，不会修改默认值：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?fx=271.24&fy=271.22&cx=323.97&cy=249.90"
+```
+
+带 YOLO 类别一起过滤：
+
+```bash
+curl -s "http://127.0.0.1:18081/xyz?label=XiongMao&fx=271.24&fy=271.22&cx=323.97&cy=249.90"
+```
+
+POST 调用也支持：
+
+```bash
+curl -s -X POST "http://127.0.0.1:18081/xyz" \
+  -H "Content-Type: application/json" \
+  -d '{"label":"XiongMao","fx":271.24,"fy":271.22,"cx":323.97,"cy":249.90}'
+```
+
+返回 JSON 里的 `intrinsics_assumption` 表示本次计算实际使用的内参。
+
 只打印 `[x, y, z]`：
 
 ```bash
@@ -735,7 +818,7 @@ PYTHONPATH="$PWD:$PWD/scripts" python3 scripts/cigarette_pose_optical_api.py \
   --pretty
 ```
 
-`focal-px=260.0` 是当前工作值：2026-05-26 已切到 YOLO segmentation 后，熊猫烟盒按上表面尺寸 `161mm x 95mm` 标定；已知左目到上表面中心点直线距离为 `750mm` 时，连续采样结果为 `759.2 / 747.8 / 748.7mm`，平均约 `751.9mm`，因此默认取 `260.0`。2026-05-27 起利群烟盒按 `280mm x 89mm` 自动切换尺寸。PnP 距离会随物体实际尺寸和 focal 一起缩放；如果之后有新的实测数据，更稳的做法是按不同类别分别测 2-3 个已知距离，再确认统一 focal 是否仍合适。
+`focal-px=260.0` 是早期按已知距离反推的历史 fallback：2026-05-26 已切到 YOLO segmentation 后，熊猫烟盒按上表面尺寸 `161mm x 95mm` 标定；已知左目到上表面中心点直线距离为 `750mm` 时，连续采样结果为 `759.2 / 747.8 / 748.7mm`，平均约 `751.9mm`。2026-06 后同事用标准相机标定得到更推荐的左目内参：`fx=271.24, fy=271.22, cx=323.97, cy=249.90`。常驻服务可通过 `/config/intrinsics` 或 debug 页面一键保存这组内参作为运行时默认值。2026-05-27 起利群烟盒按 `280mm x 89mm` 自动切换尺寸。PnP 距离会随物体实际尺寸和相机内参一起缩放；如果之后有新的实测数据，更稳的做法是按不同类别分别测 2-3 个已知距离，再核对当前标定内参是否仍合适。
 
 ## 未来 Keypoint 接入
 

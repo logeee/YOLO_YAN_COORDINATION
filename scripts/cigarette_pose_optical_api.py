@@ -67,6 +67,8 @@ class PoseConfig:
     short_side_m: float = 0.095
     orientation: str = "auto_by_stereo"
     focal_px: float = 260.0
+    fx: float | None = None
+    fy: float | None = None
     cx: float = 320.0
     cy: float = 240.0
     left_roi: tuple[int, int, int, int] | None = (190, 215, 500, 420)
@@ -76,6 +78,24 @@ class PoseConfig:
     max_reproj_px: float = 3.0
     max_depth_delta_mm: float = 100.0
     stereo_baseline_mm: float = 60.0
+
+
+def _config_fx(config: PoseConfig) -> float:
+    return float(config.fx if config.fx is not None else config.focal_px)
+
+
+def _config_fy(config: PoseConfig) -> float:
+    return float(config.fy if config.fy is not None else config.focal_px)
+
+
+def _intrinsics_assumption(config: PoseConfig) -> dict[str, float]:
+    return {
+        "focal_px": float(config.focal_px),
+        "fx": _config_fx(config),
+        "fy": _config_fy(config),
+        "cx": float(config.cx),
+        "cy": float(config.cy),
+    }
 
 
 def optical_coordinate_convention() -> dict[str, str]:
@@ -283,7 +303,7 @@ def estimate_rectified_stereo_depth(
     result: dict[str, Any] = {
         "enabled": True,
         "method": "rectified_disparity_diagnostic",
-        "assumption": "Z = focal_px * baseline_mm / disparity_px; valid only for rectified/parallel stereo",
+        "assumption": "Z = fx * baseline_mm / disparity_px; valid only for rectified/parallel stereo",
         "baseline_mm": round(float(config.stereo_baseline_mm), 1),
         "baseline_source": "measured lens-surface peak-to-peak distance; optical-center baseline may differ",
         "left_center_px": [round(float(center_left[0]), 2), round(float(center_left[1]), 2)],
@@ -297,9 +317,11 @@ def estimate_rectified_stereo_depth(
         result["warning"] = "non-positive disparity or baseline; stereo depth not computed"
         return result
 
-    z_mm = float(config.focal_px) * float(config.stereo_baseline_mm) / mean_disparity
-    x_mm = (float(center_left[0]) - float(config.cx)) * z_mm / float(config.focal_px)
-    y_mm = (float(center_left[1]) - float(config.cy)) * z_mm / float(config.focal_px)
+    fx = _config_fx(config)
+    fy = _config_fy(config)
+    z_mm = fx * float(config.stereo_baseline_mm) / mean_disparity
+    x_mm = (float(center_left[0]) - float(config.cx)) * z_mm / fx
+    y_mm = (float(center_left[1]) - float(config.cy)) * z_mm / fy
     xyz_mm = [round(x_mm, 1), round(y_mm, 1), round(z_mm, 1)]
     result.update(
         {
@@ -682,7 +704,7 @@ def estimate_pose_from_left_points(
 
     points = normalize_points(points_px, points_order)
     width_m, height_m = _orientation_size(config, selected_orientation)
-    depth = solve_depth(points, width_m, height_m, config.focal_px, config.cx, config.cy)
+    depth = solve_depth(points, width_m, height_m, _config_fx(config), config.cx, config.cy, fy_px=_config_fy(config))
     top_plane_up_unit_xyz = _top_plane_up_unit_xyz(depth["rotation_matrix"])
     box_head_point = _box_head_one_third_point(
         depth,
@@ -774,7 +796,7 @@ def calibrate_focal_from_known_range(
     def eval_focal(focal_px: float) -> dict[str, Any]:
         return estimate_pose_from_left_points(
             points,
-            config=replace(config, focal_px=float(focal_px)),
+            config=replace(config, focal_px=float(focal_px), fx=float(focal_px), fy=float(focal_px)),
             orientation=selected_orientation,
             points_order="ordered",
         )
@@ -1092,6 +1114,8 @@ def _build_config(args: argparse.Namespace) -> PoseConfig:
         short_side_m=args.short_side_m,
         orientation=args.orientation,
         focal_px=args.focal_px,
+        fx=args.fx,
+        fy=args.fy,
         cx=args.cx,
         cy=args.cy,
         left_roi=args.left_roi,
@@ -1158,7 +1182,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto_by_stereo",
         help="physical side assigned to the image top edge",
     )
-    parser.add_argument("--focal-px", type=float, default=260.0)
+    parser.add_argument("--focal-px", type=float, default=260.0, help="fallback focal length if --fx/--fy are omitted")
+    parser.add_argument("--fx", type=float, help="left camera fx in pixels")
+    parser.add_argument("--fy", type=float, help="left camera fy in pixels")
     parser.add_argument("--cx", type=float, default=320.0)
     parser.add_argument("--cy", type=float, default=240.0)
     parser.add_argument("--left-roi", type=parse_roi, default=parse_roi("190,215,500,420"))
@@ -1688,7 +1714,7 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "box_head_one_third": selected_left["box_head_one_third"],
         "box_head_one_third_above_xyz_mm": box_head_one_third_above["point_xyz_mm"],
         "box_head_one_third_above": box_head_one_third_above,
-        "intrinsics_assumption": {"focal_px": config.focal_px, "cx": config.cx, "cy": config.cy},
+        "intrinsics_assumption": _intrinsics_assumption(config),
         "stereo_baseline_mm": round(float(config.stereo_baseline_mm), 1),
         "point_adjustments": point_adjustments,
         "roi": (
