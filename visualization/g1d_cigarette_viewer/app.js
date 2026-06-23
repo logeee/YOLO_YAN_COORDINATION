@@ -944,15 +944,26 @@ function opticalVectorToRobot(vector, pose) {
 function getBoxDimensions(pose) {
   const label = getPoseLabel(pose);
   const catalog = CIGARETTE_SIZES_M[label] || CIGARETTE_SIZES_M.Xizi_Liqun;
+  const configured = pose.object_box_size_mm || pose.g1d_visualization?.box?.object_box_size_mm || null;
   let longSide = catalog.long;
   let shortSide = catalog.short;
-  if (Array.isArray(pose.object_top_size_mm) && pose.object_top_size_mm.length >= 2) {
+  let configuredThicknessMm = null;
+  if (configured && Number.isFinite(Number(configured.length_mm)) && Number.isFinite(Number(configured.width_mm))) {
+    const a = Number(configured.length_mm) / 1000;
+    const b = Number(configured.width_mm) / 1000;
+    longSide = Math.max(a, b);
+    shortSide = Math.min(a, b);
+    if (Number.isFinite(Number(configured.height_mm))) {
+      configuredThicknessMm = Number(configured.height_mm);
+    }
+  } else if (Array.isArray(pose.object_top_size_mm) && pose.object_top_size_mm.length >= 2) {
     const a = Number(pose.object_top_size_mm[0]) / 1000;
     const b = Number(pose.object_top_size_mm[1]) / 1000;
     longSide = Math.max(a, b);
     shortSide = Math.min(a, b);
   }
-  const thickness = Math.max(0.005, Number(dom.thicknessMm.value || catalog.thickness * 1000) / 1000);
+  const thicknessMm = configuredThicknessMm ?? Number(dom.thicknessMm.value || catalog.thickness * 1000);
+  const thickness = Math.max(0.005, thicknessMm / 1000);
   return { long: longSide, short: shortSide, thickness };
 }
 

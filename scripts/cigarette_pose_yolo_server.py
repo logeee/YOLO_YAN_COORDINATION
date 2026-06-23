@@ -31,7 +31,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from cigarette_pose_optical_api import build_arg_parser, run_pose  # noqa: E402
+from cigarette_pose_optical_api import YOLO_CLASS_TOP_SIZES_M, build_arg_parser, run_pose  # noqa: E402
 from yolo_topface_detector import (  # noqa: E402
     YOLO_MODEL_CACHE,
     _ensure_torchvision_nms,
@@ -63,6 +63,7 @@ class ServerConfig:
 POSE_LOCK = threading.Lock()
 RUNTIME_CONFIG_LOCK = threading.Lock()
 RUNTIME_INTRINSICS: dict[str, float] | None = None
+RUNTIME_OBJECT_SIZES_MM: dict[str, dict[str, float]] | None = None
 REQUEST_COUNTER = 0
 REQUEST_COUNTER_LOCK = threading.Lock()
 IMAGE_CLIENTS: dict[str, Any] = {}
@@ -72,6 +73,15 @@ RESULT_CACHE_ORDER: list[str] = []
 RESULT_CACHE_LOCK = threading.Lock()
 MAX_CACHED_RESULTS = 20
 MODEL_CLASS_NAMES_CACHE: dict[str, list[str]] = {}
+BUILTIN_OBJECT_SIZES_MM: dict[str, dict[str, float]] = {
+    name: {
+        "length_mm": round(float(long_side_m) * 1000.0, 1),
+        "width_mm": round(float(short_side_m) * 1000.0, 1),
+        "height_mm": 20.0,
+    }
+    for name, (long_side_m, short_side_m) in YOLO_CLASS_TOP_SIZES_M.items()
+}
+DEFAULT_OBJECT_SIZE_MM = {"length_mm": 161.0, "width_mm": 95.0, "height_mm": 20.0}
 G1D_ADJUST_URL = "http://127.0.0.1:18084/adjust"
 G1D_TARGET_ANGLE_ADJUST_URL = "http://127.0.0.1:18084/adjust_target_angle"
 G1D_RIGHT_ENTRY_ADJUST_URL = "http://127.0.0.1:18084/adjust_right_entry"
@@ -283,6 +293,13 @@ def _runtime_intrinsics() -> dict[str, float] | None:
         return dict(RUNTIME_INTRINSICS) if RUNTIME_INTRINSICS is not None else None
 
 
+def _runtime_object_sizes() -> dict[str, dict[str, float]] | None:
+    with RUNTIME_CONFIG_LOCK:
+        if RUNTIME_OBJECT_SIZES_MM is None:
+            return None
+        return {label: dict(size) for label, size in RUNTIME_OBJECT_SIZES_MM.items()}
+
+
 def _effective_intrinsics(config: ServerConfig) -> dict[str, float]:
     runtime = _runtime_intrinsics()
     if runtime is not None:
@@ -296,6 +313,127 @@ def _request_intrinsics(config: ServerConfig, overrides: dict[str, Any]) -> dict
     return _validate_intrinsics(values, base=_effective_intrinsics(config))
 
 
+def _read_runtime_config_data(config: ServerConfig) -> dict[str, Any]:
+    path = config.runtime_config_path
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"runtime config must be a JSON object: {path}")
+    return data
+
+
+def _write_runtime_config_data(config: ServerConfig, payload: dict[str, Any]) -> None:
+    path = config.runtime_config_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = dict(payload)
+    data["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _normalize_size_label(label: Any) -> str:
+    return str(label or "").strip()
+
+
+def _validate_object_size(label: str, raw: dict[str, Any], base: dict[str, float] | None = None) -> dict[str, float]:
+    base_values = base or DEFAULT_OBJECT_SIZE_MM
+    aliases = {
+        "length_mm": ("length_mm", "long_side_mm", "long_mm", "length"),
+        "width_mm": ("width_mm", "short_side_mm", "short_mm", "width"),
+        "height_mm": ("height_mm", "thickness_mm", "height", "thickness"),
+    }
+    result: dict[str, float] = {}
+    for target, names in aliases.items():
+        value = None
+        for name in names:
+            if name in raw:
+                value = raw[name]
+                break
+        if value is None:
+            value = base_values[target]
+        number = float(value)
+        if not math.isfinite(number) or number <= 0.0:
+            raise ValueError(f"{label} {target} must be a positive number")
+        result[target] = round(number, 3)
+    return result
+
+
+def _validate_object_sizes(raw: Any, base: dict[str, dict[str, float]] | None = None) -> dict[str, dict[str, float]]:
+    if raw is None:
+        return {}
+    if isinstance(raw, list):
+        values: dict[str, Any] = {}
+        for item in raw:
+            if not isinstance(item, dict):
+                raise ValueError("object_sizes list items must be JSON objects")
+            label = _normalize_size_label(item.get("label") or item.get("class_name") or item.get("name"))
+            if not label:
+                raise ValueError("object_sizes list item missing label")
+            values[label] = item
+    elif isinstance(raw, dict):
+        values = raw
+    else:
+        raise ValueError("object_sizes must be a JSON object or list")
+
+    base_values = base or {}
+    sizes: dict[str, dict[str, float]] = {}
+    for label_raw, size_raw in values.items():
+        label = _normalize_size_label(label_raw)
+        if not label:
+            continue
+        if not isinstance(size_raw, dict):
+            raise ValueError(f"object_sizes[{label}] must be a JSON object")
+        sizes[label] = _validate_object_size(label, size_raw, base=base_values.get(label, DEFAULT_OBJECT_SIZE_MM))
+    return sizes
+
+
+def _startup_object_sizes(config: ServerConfig) -> dict[str, dict[str, float]]:
+    labels: list[str] = []
+    for label in _yolo_class_names(config.yolo_model):
+        if label not in labels:
+            labels.append(label)
+    for label in BUILTIN_OBJECT_SIZES_MM:
+        if label not in labels:
+            labels.append(label)
+
+    sizes: dict[str, dict[str, float]] = {}
+    for label in labels:
+        sizes[label] = dict(BUILTIN_OBJECT_SIZES_MM.get(label, DEFAULT_OBJECT_SIZE_MM))
+    return sizes
+
+
+def _effective_object_sizes(config: ServerConfig) -> dict[str, dict[str, float]]:
+    sizes = _startup_object_sizes(config)
+    runtime = _runtime_object_sizes()
+    if runtime:
+        for label, size in runtime.items():
+            sizes[label] = dict(size)
+    return sizes
+
+
+def _apply_object_sizes_to_pnp(config: ServerConfig) -> None:
+    top_sizes: dict[str, tuple[float, float]] = {
+        label: (size["length_mm"] / 1000.0, size["width_mm"] / 1000.0)
+        for label, size in _effective_object_sizes(config).items()
+    }
+    YOLO_CLASS_TOP_SIZES_M.clear()
+    YOLO_CLASS_TOP_SIZES_M.update(top_sizes)
+
+
+def _object_size_config_payload(config: ServerConfig) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "config_path": str(config.runtime_config_path),
+        "startup_defaults": _startup_object_sizes(config),
+        "runtime_defaults": _runtime_object_sizes(),
+        "effective_defaults": _effective_object_sizes(config),
+        "object_sizes": _effective_object_sizes(config),
+        "note": "length_mm/width_mm are used by YOLO class-aware PnP; height_mm is used by the G1-D 3D visualizer thickness",
+    }
+
+
 def _runtime_config_payload(config: ServerConfig) -> dict[str, Any]:
     return {
         "ok": True,
@@ -303,36 +441,53 @@ def _runtime_config_payload(config: ServerConfig) -> dict[str, Any]:
         "startup_defaults": _server_intrinsics(config),
         "runtime_defaults": _runtime_intrinsics(),
         "effective_defaults": _effective_intrinsics(config),
+        "object_sizes": _object_size_config_payload(config),
         "note": "pose/xyz/debug requests can still override these values with fx/fy/cx/cy query or JSON fields",
     }
 
 
 def _load_runtime_intrinsics(config: ServerConfig) -> None:
-    path = config.runtime_config_path
-    if not path.exists():
+    data = _read_runtime_config_data(config)
+    if not data:
+        _apply_object_sizes_to_pnp(config)
         return
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise ValueError(f"runtime config must be a JSON object: {path}")
-    raw = data.get("intrinsics", data)
-    if not isinstance(raw, dict):
-        raise ValueError(f"runtime intrinsics must be a JSON object: {path}")
-    values = _validate_intrinsics(raw, base=_server_intrinsics(config))
+    raw_intrinsics = data.get("intrinsics")
+    if raw_intrinsics is None and any(name in data for name in ("focal_px", "fx", "fy", "cx", "cy")):
+        raw_intrinsics = data
+    values = None
+    if raw_intrinsics is not None:
+        if not isinstance(raw_intrinsics, dict):
+            raise ValueError(f"runtime intrinsics must be a JSON object: {config.runtime_config_path}")
+        values = _validate_intrinsics(raw_intrinsics, base=_server_intrinsics(config))
+
+    raw_sizes = data.get("object_sizes")
+    object_sizes = _validate_object_sizes(raw_sizes, base=_startup_object_sizes(config)) if raw_sizes is not None else None
     with RUNTIME_CONFIG_LOCK:
-        global RUNTIME_INTRINSICS
-        RUNTIME_INTRINSICS = values
+        global RUNTIME_INTRINSICS, RUNTIME_OBJECT_SIZES_MM
+        if values is not None:
+            RUNTIME_INTRINSICS = values
+        if object_sizes is not None:
+            RUNTIME_OBJECT_SIZES_MM = object_sizes
+    _apply_object_sizes_to_pnp(config)
 
 
 def _save_runtime_intrinsics(config: ServerConfig, intrinsics: dict[str, float]) -> None:
-    path = config.runtime_config_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"intrinsics": intrinsics, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    payload = _read_runtime_config_data(config)
+    payload["intrinsics"] = intrinsics
     with RUNTIME_CONFIG_LOCK:
         global RUNTIME_INTRINSICS
         RUNTIME_INTRINSICS = dict(intrinsics)
+    _write_runtime_config_data(config, payload)
+
+
+def _save_runtime_object_sizes(config: ServerConfig, object_sizes: dict[str, dict[str, float]]) -> None:
+    payload = _read_runtime_config_data(config)
+    payload["object_sizes"] = object_sizes
+    with RUNTIME_CONFIG_LOCK:
+        global RUNTIME_OBJECT_SIZES_MM
+        RUNTIME_OBJECT_SIZES_MM = {label: dict(size) for label, size in object_sizes.items()}
+    _write_runtime_config_data(config, payload)
+    _apply_object_sizes_to_pnp(config)
 
 
 def _serve_intrinsics_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
@@ -348,6 +503,26 @@ def _serve_intrinsics_config(handler: BaseHTTPRequestHandler, config: ServerConf
     intrinsics = _validate_intrinsics(values, base=_effective_intrinsics(config))
     _save_runtime_intrinsics(config, intrinsics)
     _json_response(handler, 200, _runtime_config_payload(config))
+
+
+def _serve_object_sizes_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
+    if handler.command == "GET":
+        _json_response(handler, 200, _object_size_config_payload(config))
+        return
+    length = int(handler.headers.get("Content-Length") or 0)
+    if length <= 0:
+        _json_response(handler, 400, {"ok": False, "error": "request JSON body is required"})
+        return
+    data = json.loads(handler.rfile.read(length).decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("request JSON body must be an object")
+    raw_sizes = data.get("object_sizes", data)
+    object_sizes = _validate_object_sizes(raw_sizes, base=_effective_object_sizes(config))
+    if not object_sizes:
+        _json_response(handler, 400, {"ok": False, "error": "provide at least one object size"})
+        return
+    _save_runtime_object_sizes(config, object_sizes)
+    _json_response(handler, 200, _object_size_config_payload(config))
 
 
 def _coerce_g1d_adjust_value(name: str, value: Any) -> Any:
@@ -555,6 +730,49 @@ def _selected_yolo_candidate(result: dict[str, Any]) -> dict[str, Any]:
     return left_yolo if isinstance(left_yolo, dict) else {}
 
 
+def _object_box_size_for_result(config: ServerConfig, result: dict[str, Any]) -> dict[str, Any]:
+    label = _normalize_size_label(result.get("selected_yolo_label"))
+    top_source = result.get("object_top_size_source")
+    if isinstance(top_source, dict) and not label:
+        label = _normalize_size_label(top_source.get("class_name"))
+
+    sizes = _effective_object_sizes(config)
+    if label and label in sizes:
+        size = dict(sizes[label])
+        source = "runtime_or_configured_label_size"
+    elif isinstance(top_source, dict) and top_source.get("long_side_mm") and top_source.get("short_side_mm"):
+        size = {
+            "length_mm": float(top_source["long_side_mm"]),
+            "width_mm": float(top_source["short_side_mm"]),
+            "height_mm": DEFAULT_OBJECT_SIZE_MM["height_mm"],
+        }
+        source = str(top_source.get("source") or "object_top_size_source")
+    else:
+        size = dict(DEFAULT_OBJECT_SIZE_MM)
+        source = "default_object_size"
+
+    return {
+        "label": label or None,
+        "length_mm": round(float(size["length_mm"]), 3),
+        "width_mm": round(float(size["width_mm"]), 3),
+        "height_mm": round(float(size["height_mm"]), 3),
+        "source": source,
+    }
+
+
+def _enrich_result_object_size(config: ServerConfig, result: dict[str, Any]) -> None:
+    box_size = _object_box_size_for_result(config, result)
+    result["object_box_size_mm"] = box_size
+    top_source = result.get("object_top_size_source")
+    if isinstance(top_source, dict):
+        top_source["height_mm"] = box_size["height_mm"]
+        top_source["box_size_mm"] = [box_size["length_mm"], box_size["width_mm"], box_size["height_mm"]]
+        top_source["known_class_box_sizes_mm"] = {
+            label: [size["length_mm"], size["width_mm"], size["height_mm"]]
+            for label, size in _effective_object_sizes(config).items()
+        }
+
+
 def _g1d_visualization_data(result: dict[str, Any]) -> dict[str, Any]:
     alignment = result.get("robot_alignment")
     if not isinstance(alignment, dict):
@@ -598,6 +816,7 @@ def _g1d_visualization_data(result: dict[str, Any]) -> dict[str, Any]:
             "head_point_xyz_mm": result.get("box_head_point_xyz_mm"),
             "head_to_tail_unit_xyz": _nested(result, "box_head_point", "head_to_tail_unit_xyz"),
             "object_top_size_mm": result.get("object_top_size_mm"),
+            "object_box_size_mm": result.get("object_box_size_mm"),
             "selected_orientation": result.get("selected_orientation"),
             "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         },
@@ -661,6 +880,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "top_plane_camera_to_vertical_deg": result.get("top_plane_camera_to_vertical_deg"),
         "object_top_size_mm": result.get("object_top_size_mm"),
         "object_top_size_source": result.get("object_top_size_source"),
+        "object_box_size_mm": result.get("object_box_size_mm"),
         "near_edge_midpoint_xyz_mm": result.get("near_edge_midpoint_xyz_mm"),
         "near_edge_midpoint": result.get("near_edge_midpoint"),
         "box_near_edge_midpoint_xyz_mm": result.get("box_near_edge_midpoint_xyz_mm"),
@@ -703,6 +923,7 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
             raise RuntimeError(f"failed to write left image: {left_path}")
         if not cv2.imwrite(str(right_path), right_image):
             raise RuntimeError(f"failed to write right image: {right_path}")
+        _apply_object_sizes_to_pnp(config)
         args = _build_pose_args(config, out_dir, left_path, right_path, overrides)
         result, exit_code = run_pose(args)
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
@@ -718,6 +939,8 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
         "yolo_class_names": _yolo_class_names(config.yolo_model),
     }
     result["server"] = server_info
+    _enrich_result_object_size(config, result)
+    result["object_size_config"] = _object_size_config_payload(config)
     result["g1d_visualization"] = _g1d_visualization_data(result)
     LATEST_RESULT = result
     _remember_result(result)
@@ -1257,6 +1480,59 @@ def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
     )
 
 
+def _debug_object_size_controls_html(payload: dict[str, Any]) -> str:
+    config_data = payload.get("object_size_config")
+    if not isinstance(config_data, dict):
+        config_data = {}
+    sizes = config_data.get("object_sizes") or config_data.get("effective_defaults")
+    if not isinstance(sizes, dict) or not sizes:
+        sizes = {"XiongMao": BUILTIN_OBJECT_SIZES_MM.get("XiongMao", DEFAULT_OBJECT_SIZE_MM)}
+
+    selected_label = str(payload.get("selected_yolo_label") or "")
+    rows: list[str] = []
+    for label in sorted(sizes):
+        raw_size = sizes.get(label)
+        if not isinstance(raw_size, dict):
+            continue
+        try:
+            length_mm = float(raw_size.get("length_mm", DEFAULT_OBJECT_SIZE_MM["length_mm"]))
+            width_mm = float(raw_size.get("width_mm", DEFAULT_OBJECT_SIZE_MM["width_mm"]))
+            height_mm = float(raw_size.get("height_mm", DEFAULT_OBJECT_SIZE_MM["height_mm"]))
+        except Exception:
+            continue
+        selected_class = " selected-object-size-row" if label == selected_label else ""
+        rows.append(
+            (
+                f'<tr class="{selected_class}" data-object-size-row data-label="{html_lib.escape(label)}">'
+                f"<td><strong>{html_lib.escape(label)}</strong></td>"
+                f'<td><input data-size-field="length_mm" type="number" min="1" step="0.1" value="{length_mm:.1f}"></td>'
+                f'<td><input data-size-field="width_mm" type="number" min="1" step="0.1" value="{width_mm:.1f}"></td>'
+                f'<td><input data-size-field="height_mm" type="number" min="1" step="0.1" value="{height_mm:.1f}"></td>'
+                "</tr>"
+            )
+        )
+
+    return (
+        '<details class="debug-object-sizes-panel">'
+        '<summary class="debug-object-sizes-title">'
+        '<strong>烟盒尺寸配置</strong>'
+        '<span>展开后可按 YOLO 标签修改长/宽/高</span>'
+        "</summary>"
+        '<div class="debug-object-sizes-note">长/宽参与 PnP 坐标计算；高/厚度用于 18085 的 3D 展示。</div>'
+        '<div class="debug-object-sizes-table-wrap">'
+        '<table class="debug-object-sizes-table">'
+        "<thead><tr><th>YOLO 标签</th><th>长 mm</th><th>宽 mm</th><th>高/厚 mm</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody>"
+        "</table>"
+        "</div>"
+        '<div class="debug-object-sizes-actions">'
+        '<button id="debugSaveObjectSizes" class="button primary-alt-button" type="button">保存尺寸配置</button>'
+        '<span id="debugObjectSizesStatus"></span>'
+        "</div>"
+        "</details>"
+    )
+
+
 def _alignment_hypotheses_table(payload: dict[str, Any]) -> str:
     hypotheses = payload.get("robot_alignment_hypotheses")
     if not isinstance(hypotheses, dict) or not hypotheses:
@@ -1629,6 +1905,15 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .debug-intrinsics-panel label {{ display: grid; gap: 3px; color: #52606d; font-size: 12px; font-weight: 700; }}
     .debug-intrinsics-panel input {{ width: 84px; padding: 6px 8px; border: 1px solid #8795a1; font: inherit; background: #fff; color: #102a43; }}
     .debug-intrinsics-panel span {{ color: #627d98; font-size: 12px; }}
+    .debug-object-sizes-panel {{ margin: 10px 0 16px; padding: 10px; border: 1px solid #d9e2ec; border-radius: 6px; background: #fffdf7; }}
+    .debug-object-sizes-title {{ display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; cursor: pointer; }}
+    .debug-object-sizes-title strong {{ color: #102a43; }}
+    .debug-object-sizes-title span, .debug-object-sizes-actions span {{ color: #627d98; font-size: 12px; }}
+    .debug-object-sizes-note {{ color: #627d98; font-size: 12px; margin: 8px 0; }}
+    .debug-object-sizes-table-wrap {{ overflow-x: auto; }}
+    .debug-object-sizes-table input {{ width: 94px; padding: 6px 8px; border: 1px solid #8795a1; font: inherit; background: #fff; color: #102a43; }}
+    .debug-object-sizes-table .selected-object-size-row td {{ background: #fff7cc; }}
+    .debug-object-sizes-actions {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }}
     .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 18px; }}
     .summary-tile {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; min-height: 76px; }}
     .summary-label {{ color: #52606d; font-size: 13px; margin-bottom: 6px; }}
@@ -1665,6 +1950,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     <a id="debugXyzLink" class="button" href="{xyz_href}">坐标 JSON</a>
   </header>
   {_debug_intrinsics_controls_html(payload)}
+  {_debug_object_size_controls_html(payload)}
   <script>
     (() => {{
       const select = document.getElementById("debugLabelSelect");
@@ -1677,6 +1963,9 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       const saveDefaultButton = document.getElementById("debugSaveDefaultIntrinsics");
       const saveStatus = document.getElementById("debugIntrinsicsSaveStatus");
       const currentIntrinsics = document.getElementById("debugIntrinsicsCurrent");
+      const objectSizeRows = Array.from(document.querySelectorAll("[data-object-size-row]"));
+      const saveObjectSizesButton = document.getElementById("debugSaveObjectSizes");
+      const objectSizesStatus = document.getElementById("debugObjectSizesStatus");
       const calibratedIntrinsics = {{ fx: "271.24", fy: "271.22", cx: "323.97", cy: "249.90" }};
       const oldDefaultIntrinsics = {{ fx: "260.00", fy: "260.00", cx: "320.00", cy: "240.00" }};
       const readIntrinsicsObject = () => {{
@@ -1784,8 +2073,48 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           button.disabled = false;
         }}
       }};
+      const readObjectSizesObject = () => {{
+        const object_sizes = {{}};
+        for (const row of objectSizeRows) {{
+          const label = row.dataset.label || "";
+          if (!label) continue;
+          const entry = {{}};
+          for (const input of Array.from(row.querySelectorAll("[data-size-field]"))) {{
+            const field = input.dataset.sizeField;
+            const value = Number(input.value);
+            if (!field || !Number.isFinite(value) || value <= 0) {{
+              throw new Error(`${{label}} 的 ${{field || "尺寸"}} 必须是正数`);
+            }}
+            entry[field] = value;
+          }}
+          object_sizes[label] = entry;
+        }}
+        return object_sizes;
+      }};
+      const saveObjectSizes = async () => {{
+        if (!saveObjectSizesButton) return;
+        saveObjectSizesButton.disabled = true;
+        if (objectSizesStatus) objectSizesStatus.textContent = "保存中...";
+        try {{
+          const object_sizes = readObjectSizesObject();
+          const res = await fetch("/config/object_sizes", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ object_sizes }}),
+            cache: "no-store",
+          }});
+          const payload = await res.json();
+          if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
+          if (objectSizesStatus) objectSizesStatus.textContent = "已保存，下一次 /debug、/xyz、/pose 计算生效";
+        }} catch (err) {{
+          if (objectSizesStatus) objectSizesStatus.textContent = `保存失败: ${{err}}`;
+        }} finally {{
+          saveObjectSizesButton.disabled = false;
+        }}
+      }};
       if (select) select.addEventListener("change", updateLinks);
       for (const input of intrinsicInputs) input.addEventListener("input", updateLinks);
+      if (saveObjectSizesButton) saveObjectSizesButton.addEventListener("click", saveObjectSizes);
       if (saveCalibratedButton) saveCalibratedButton.addEventListener("click", async () => {{
         setIntrinsics(calibratedIntrinsics);
         await saveDefaultIntrinsics(saveCalibratedButton);
@@ -1857,6 +2186,8 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "intrinsics_startup_defaults": _server_intrinsics(config),
         "intrinsics_runtime_defaults": _runtime_intrinsics(),
         "intrinsics_effective_defaults": _effective_intrinsics(config),
+        "object_sizes_runtime_defaults": _runtime_object_sizes(),
+        "object_sizes_effective_defaults": _effective_object_sizes(config),
         "yolo_class_names": _yolo_class_names(config.yolo_model),
         "cuda_available": cuda_available,
         "torch_cuda": torch_cuda,
@@ -1864,6 +2195,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "endpoints": [
             "/health",
             "/config/intrinsics",
+            "/config/object_sizes",
             "/pose",
             "/xyz",
             "/debug/left_points.jpg",
@@ -1934,6 +2266,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/config/intrinsics":
                     _serve_intrinsics_config(self, config)
+                    return
+                if path == "/config/object_sizes":
+                    _serve_object_sizes_config(self, config)
                     return
                 if path == "/g1d/adjust":
                     _serve_g1d_adjust(self)
