@@ -1694,7 +1694,7 @@ def _embedded_g1d_visualizer_html(payload: dict[str, Any]) -> str:
     return f"""
   <section class="g1d-visualizer-card">
     <div class="g1d-visualizer-title">
-      <h2>G1-D / 烟盒 3D 相对位置</h2>
+      <h2><a id="g1dVisualizerOpenLink" href="#" title="打开 18085 可视化页面">G1-D / 烟盒 3D 相对位置</a></h2>
       <span>使用本次 /debug 已计算结果，不重新拍照</span>
     </div>
     <iframe
@@ -1708,8 +1708,10 @@ def _embedded_g1d_visualizer_html(payload: dict[str, Any]) -> str:
       (() => {{
         const frame = document.getElementById("g1dVisualizerFrame");
         const payloadEl = document.getElementById("g1dCurrentPosePayload");
+        const openLink = document.getElementById("g1dVisualizerOpenLink");
         if (!frame || !payloadEl) return;
         const visualizerOrigin = `${{window.location.protocol}}//${{window.location.hostname}}:18085`;
+        if (openLink) openLink.href = `${{visualizerOrigin}}/`;
         let payload = JSON.parse(payloadEl.textContent || "{{}}");
         frame.src = `${{visualizerOrigin}}/?compact=1&embedded=1&no_fetch=1&view=normal&t=${{Date.now()}}`;
         const postPayload = () => {{
@@ -1868,7 +1870,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
             f'<section><h2>左目原图</h2><img src="{image_src("/latest/left_input.jpg")}" alt="left input"></section>',
             f'<section><h2>左目四点</h2><img src="{image_src("/latest/left_points.jpg")}" alt="left points"></section>',
             f'<section><h2>左目上方点</h2><img src="{image_src("/latest/left_projected.jpg")}" alt="left projected above points"></section>',
-            f'<section class="wide"><h2>左目上方点放大</h2><img src="{image_src("/latest/left_projected_zoom.jpg")}" alt="left projected above points zoom"></section>',
+            f'<section><h2>左目上方点放大</h2><img src="{image_src("/latest/left_projected_zoom.jpg")}" alt="left projected above points zoom"></section>',
             f'<section><h2>左目全部候选</h2><img src="{image_src("/latest/left_candidates.jpg")}" alt="left candidates"></section>',
             f'<section><h2>右目原图</h2><img src="{image_src("/latest/right_input.jpg")}" alt="right input"></section>',
             f'<section><h2>右目四点</h2><img src="{image_src("/latest/right_points.jpg")}" alt="right points"></section>',
@@ -1922,11 +1924,11 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }}
     section {{ border: 1px solid #d9e2ec; padding: 10px; }}
     img {{ width: 100%; max-width: 640px; height: auto; display: block; background: #f0f4f8; }}
-    .wide {{ grid-column: 1 / -1; }}
-    .wide img {{ max-width: 1100px; }}
     .g1d-visualizer-card {{ width: min(380px, 100%); margin: 16px 0 18px; border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; background: #f8fbff; }}
     .g1d-visualizer-title {{ display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }}
     .g1d-visualizer-title h2 {{ margin: 0; }}
+    .g1d-visualizer-title a {{ color: #102a43; text-decoration: none; }}
+    .g1d-visualizer-title a:hover {{ text-decoration: underline; }}
     .g1d-visualizer-title span {{ color: #627d98; font-size: 13px; }}
     .g1d-visualizer-frame {{ width: 100%; height: 560px; border: 0; border-radius: 6px; display: block; background: #0c1014; }}
     .g1d-adjust-panel {{ border: 1px solid #bcccdc; border-radius: 6px; padding: 10px; margin: 14px 0 18px; background: #f8fbff; }}
@@ -1938,6 +1940,9 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
     th, td {{ border: 1px solid #d9e2ec; padding: 5px; vertical-align: top; }}
     th {{ background: #f0f4f8; }}
+    .debug-json-details {{ margin: 16px 0; }}
+    .debug-json-details summary {{ cursor: pointer; color: #102a43; font-size: 20px; font-weight: 700; margin: 0 0 8px; }}
+    .debug-json-details pre {{ margin-top: 10px; }}
     pre {{ overflow: auto; background: #102a43; color: #f0f4f8; padding: 12px; font-size: 12px; }}
   </style>
 </head>
@@ -2139,14 +2144,18 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
   <div id="debugHypotheses">{_alignment_hypotheses_table(payload)}</div>
   <h2>G1-D 可视化需要的数据</h2>
   <div id="debugVisualizationData">{_g1d_visualization_table(payload)}</div>
-  <h2>当前选中的左目候选</h2>
-  <pre id="debugSelectedCandidate">{selected_text}</pre>
+  <details class="debug-json-details">
+    <summary>当前选中的左目候选 JSON</summary>
+    <pre id="debugSelectedCandidate">{selected_text}</pre>
+  </details>
   <h2>左目 YOLO 候选</h2>
   <div id="debugLeftCandidates">{_candidate_table(left_candidates)}</div>
   <h2>右目 YOLO 候选</h2>
   <div id="debugRightCandidates">{_candidate_table(right_candidates)}</div>
-  <h2>完整 JSON</h2>
-  <pre id="debugJson">{json_text}</pre>
+  <details class="debug-json-details">
+    <summary>完整 JSON</summary>
+    <pre id="debugJson">{json_text}</pre>
+  </details>
 </body>
 </html>
 """
