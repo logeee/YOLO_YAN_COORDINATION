@@ -1,0 +1,25 @@
+[Unit]
+Description=G1-D Cigarette Relative Position Visualizer
+After=network-online.target cigarette-pose-yolo.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+Environment=VISUALIZER_BIND=0.0.0.0
+Environment=VISUALIZER_PORT=18085
+Environment=VISUALIZER_XYZ_URL=http://127.0.0.1:18081/xyz
+Environment=PYTHON=/home/unitree/miniconda3/envs/tv/bin/python
+Environment=UNITREE_SDK2PY_PATH=/home/unitree/unitree_sdk2_python
+Environment=DDS_INTERFACE=eth0
+Environment=DDS_LOWSTATE_TOPIC=rt/lowstate
+Environment=DDS_HISPEED_TOPIC=rt/hispeed_state
+Environment=JOINT_STATES_TOPIC=/joint_states
+Environment=VISUALIZER_TIMEOUT_SEC=2.0
+ExecStart=/bin/bash /home/unitree/YOLO_YAN_COORDINATION/scripts/g1d_cigarette_visualizer_server.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

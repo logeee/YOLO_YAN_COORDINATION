@@ -1,0 +1,17 @@
+[Unit]
+Description=G1D Pose Micro-Adjustment Service
+After=network-online.target cigarette-pose-yolo.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+ExecStart=/bin/bash scripts/g1d_pose_adjust_service.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/tmp/g1d_pose_adjust_service.log
+StandardError=append:/tmp/g1d_pose_adjust_service.log
+
+[Install]
+WantedBy=multi-user.target

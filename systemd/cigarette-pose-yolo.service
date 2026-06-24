@@ -1,0 +1,17 @@
+[Unit]
+Description=Cigarette Pose YOLO Coordinate Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+ExecStart=/bin/bash scripts/cigarette_pose_yolo_server_gpu.sh
+Restart=always
+RestartSec=3
+StandardOutput=append:/tmp/cigarette_pose_yolo_server.log
+StandardError=append:/tmp/cigarette_pose_yolo_server.log
+
+[Install]
+WantedBy=multi-user.target

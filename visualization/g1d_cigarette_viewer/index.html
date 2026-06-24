@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>G1-D 烟盒相对位置</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+          "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="tool-panel" aria-label="控制面板">
+        <div class="title-block">
+          <h1>G1-D / 烟盒</h1>
+          <p id="statusText">等待数据</p>
+        </div>
+
+        <label class="field">
+          <span>XYZ 地址</span>
+          <input id="sourceUrl" value="http://192.168.123.164:18081/xyz" />
+        </label>
+
+        <label class="field">
+          <span>Robot State 地址</span>
+          <input id="robotStateUrl" value="/api/robot_state" />
+        </label>
+
+        <div class="inline-fields">
+          <label class="field">
+            <span>类别</span>
+            <select id="labelSelect">
+              <option value="">自动</option>
+              <option value="XiongMao">XiongMao</option>
+              <option value="Xizi_Liqun">Xizi_Liqun</option>
+              <option value="Liqun">Liqun</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>厚度 mm</span>
+            <input id="thicknessMm" type="number" min="5" max="80" step="1" value="20" />
+          </label>
+        </div>
+
+        <div class="method-toggle">
+          <span class="method-toggle-title">方法对比</span>
+          <label class="method-check method-old">
+            <input id="showOldOld" type="checkbox" checked />
+            <span>① 老内参 + 老外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-new">
+            <input id="showOldNew" type="checkbox" checked />
+            <span>② 老内参 + 新外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-newintr">
+            <input id="showNewNew" type="checkbox" checked />
+            <span>③ 新内参 + 新外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-newold">
+            <input id="showNewOld" type="checkbox" checked />
+            <span>④ 新内参 + 老外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check">
+            <input id="useOurPnp" type="checkbox" />
+            <span>⑤ 我们的 PnP（默认不选）</span>
+          </label>
+          <label class="method-check">
+            <input id="centerOnly" type="checkbox" />
+            <span>只显示中心点（隐藏盒子外形）</span>
+          </label>
+        </div>
+
+        <input id="columnExtensionMm" type="hidden" value="420" />
+        <input id="cameraX" type="hidden" value="0.0576235" />
+        <input id="cameraY" type="hidden" value="0.01753" />
+        <input id="cameraZ" type="hidden" value="0.42987" />
+
+        <div class="button-row data-row">
+          <button id="fetchBtn" class="primary-action" type="button">刷新数据</button>
+        </div>
+
+        <div class="pick-panel" id="baseCoordPanel">
+          <span class="method-toggle-title">基座系坐标 (内参 × 外参 对比)</span>
+          <dl class="metrics">
+            <div><dt>① 老内参 + 老外参</dt><dd id="baseCoordOldOld">-</dd></div>
+            <div><dt>② 老内参 + 新外参</dt><dd id="baseCoordOldNew">-</dd></div>
+            <div><dt>③ 新内参 + 新外参</dt><dd id="baseCoordNewNew">-</dd></div>
+            <div><dt>④ 新内参 + 老外参</dt><dd id="baseCoordNewOld">-</dd></div>
+            <div><dt>⑤ 我们的 PnP + 手眼</dt><dd id="baseCoordOurs">-</dd></div>
+            <div><dt>外参差 (①→②)</dt><dd id="baseCoordDeltaEx">-</dd></div>
+            <div><dt>内参差 (②→③)</dt><dd id="baseCoordDeltaIn">-</dd></div>
+          </dl>
+          <div class="button-row">
+            <button id="baseCoordRefresh" class="primary-action" type="button">获取基座坐标</button>
+          </div>
+          <p id="baseCoordStatus" class="pick-status">点"获取基座坐标"后显示 (torso_link 系, [X前, Y左, Z上], 单位 mm)</p>
+        </div>
+
+        <div class="auto-row">
+          <label class="auto-check">
+            <input id="autoRefresh" type="checkbox" checked />
+            <span>自动刷新机械臂姿态(不动 YOLO/视角)</span>
+          </label>
+          <label class="field auto-interval">
+            <span>间隔 ms</span>
+            <input id="autoInterval" type="number" min="100" step="100" value="500" />
+          </label>
+        </div>
+
+        <div class="button-row">
+          <button id="normalViewBtn" type="button">正常</button>
+          <button id="topViewBtn" type="button">俯视</button>
+          <button id="sideViewBtn" type="button">侧视</button>
+        </div>
+
+        <div class="pick-panel" id="pickPanel">
+          <span class="method-toggle-title">抓取(前端控制)</span>
+          <div class="button-row">
+            <button id="pkDetect" type="button">识别烟盒</button>
+            <button id="pkSim" class="primary-action" type="button">模拟执行</button>
+            <button id="pkRun" class="danger-action" type="button">真机执行</button>
+          </div>
+          <p id="pickStatus" class="pick-status">就绪</p>
+        </div>
+
+        <div class="pick-panel" id="readyPanel">
+          <span class="method-toggle-title">预备位姿(抬臂防撞桌)</span>
+          <div class="button-row">
+            <button id="rpSave" class="primary-action" type="button">保存当前姿态为预备位姿</button>
+            <button id="rpLoad" type="button">查看已存</button>
+          </div>
+          <p id="readyStatus" class="pick-status">先手动把机械臂抬到理想区域,再点保存</p>
+        </div>
+
+        <div class="playback" id="playbackPanel">
+          <span class="method-toggle-title">抓取轨迹回放(规划)</span>
+          <div class="button-row">
+            <button id="pbLoadServer" type="button">载入规划</button>
+            <label class="pb-file-btn" for="pbFile">选择 JSON 文件</label>
+            <input id="pbFile" type="file" accept="application/json,.json" hidden />
+          </div>
+          <div class="button-row">
+            <button id="pbPlay" class="primary-action" type="button" disabled>播放</button>
+            <button id="pbRestart" type="button" disabled>重置</button>
+            <label class="field auto-interval">
+              <span>速度</span>
+              <select id="pbSpeed">
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+          </div>
+          <input id="pbSlider" type="range" min="0" max="1" step="0.001" value="0" disabled />
+          <dl class="metrics pb-metrics">
+            <div><dt>时间</dt><dd id="pbTime">-</dd></div>
+            <div><dt>阶段</dt><dd id="pbPhase">-</dd></div>
+            <div><dt>吸盘</dt><dd id="pbSuction">-</dd></div>
+          </dl>
+        </div>
+
+        <dl class="metrics">
+          <div>
+            <dt>选中类别</dt>
+            <dd id="metricLabel">-</dd>
+          </div>
+          <div>
+            <dt>中心前向</dt>
+            <dd id="metricForward">-</dd>
+          </div>
+          <div>
+            <dt>中心垂直</dt>
+            <dd id="metricVertical">-</dd>
+          </div>
+          <div>
+            <dt>近端边前向</dt>
+            <dd id="metricNear">-</dd>
+          </div>
+          <div>
+            <dt>朝目标转角</dt>
+            <dd id="metricTurn">-</dd>
+          </div>
+          <div>
+            <dt>长轴角</dt>
+            <dd id="metricYaw">-</dd>
+          </div>
+          <div>
+            <dt>校正前后中心差</dt>
+            <dd id="metricDelta">-</dd>
+          </div>
+          <div>
+            <dt>状态来源</dt>
+            <dd id="metricState">-</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="scene-panel" aria-label="3D 场景">
+        <div id="viewport"></div>
+        <output id="sceneState" hidden></output>
+        <div class="legend">
+          <span><i class="axis-x"></i>X 前</span>
+          <span><i class="axis-y"></i>Y 左</span>
+          <span><i class="axis-z"></i>Z 上</span>
+          <span><i class="robot-color"></i>G1-D</span>
+          <span><i class="box-new"></i>标定校正后</span>
+          <span><i class="box-old"></i>标定校正前</span>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./app.js?v=20260622_5method_centeronly_v10"></script>
+  </body>
+</html>
