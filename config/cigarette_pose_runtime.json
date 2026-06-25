@@ -1,0 +1,42 @@
+{
+  "intrinsics": {
+    "focal_px": 260.0,
+    "fx": 275.06,
+    "fy": 275.39,
+    "cx": 305.71,
+    "cy": 268.34
+  },
+  "updated_at": "2026-06-24T15:45:24",
+  "object_sizes": {
+    "BaiYan": {
+      "length_mm": 160.0,
+      "width_mm": 95.0,
+      "height_mm": 20.0
+    },
+    "HuangShan": {
+      "length_mm": 161.0,
+      "width_mm": 95.0,
+      "height_mm": 20.0
+    },
+    "LiQunYangGuangZunZhongZhi": {
+      "length_mm": 161.0,
+      "width_mm": 95.0,
+      "height_mm": 20.0
+    },
+    "XiongMao": {
+      "length_mm": 161.0,
+      "width_mm": 95.0,
+      "height_mm": 40.0
+    },
+    "Xizi_Liqun": {
+      "length_mm": 280.0,
+      "width_mm": 89.0,
+      "height_mm": 20.0
+    },
+    "YangGuangLiQun": {
+      "length_mm": 161.0,
+      "width_mm": 95.0,
+      "height_mm": 20.0
+    }
+  }
+}
