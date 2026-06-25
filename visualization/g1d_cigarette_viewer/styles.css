@@ -388,6 +388,14 @@ body.compact-mode .legend i {
   color: #ff6fd8;
 }
 
+.method-check.method-right span {
+  color: #9d7bff;
+}
+
+.method-check.method-rightdist span {
+  color: #ff8c42;
+}
+
 .pick-panel {
   display: flex;
   flex-direction: column;

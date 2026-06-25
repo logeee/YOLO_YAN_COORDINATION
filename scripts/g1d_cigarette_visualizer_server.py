@@ -54,31 +54,39 @@ OLD_INTRINSICS: dict[str, float] = {"fx": 260.0, "fy": 260.0, "cx": 320.0, "cy":
 # _load_left_intrinsics_file). These hard-coded numbers are only a fallback used
 # when the file is missing; they mirror the previous 20260615172934 calibration.
 NEW_INTRINSICS: dict[str, float] = {"fx": 271.24, "fy": 271.22, "cx": 323.97, "cy": 249.90}
+# RIGHT-camera NEW intrinsics, sent as fx_right/fy_right/cx_right/cy_right so the
+# service also returns a right-eye 3D point under our calibration.
+NEW_INTRINSICS_RIGHT: dict[str, float] = {"fx": 271.24, "fy": 271.22, "cx": 323.97, "cy": 249.90}
 
 # NEW distortion coefficients (k1,k2,p1,p2,k3), loaded from the same calibration
-# file as NEW_INTRINSICS. ONLY the ⑥ 新内参+新外参+畸变校正 combo sends these to the
+# file as NEW_INTRINSICS. ONLY the distortion-corrected combos send these to the
 # YOLO service; every other combo sends ZERO_DIST so the service's mono-PnP does
 # NOT undistort, keeping the intrinsics/extrinsics-only comparison clean.
 NEW_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
+NEW_DIST_RIGHT: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
 ZERO_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Default calibration files on this machine. NEW intrinsics (grid) come from the
 # JSON; our_method intrinsics come from the matching OpenCV stereo YAML; NEW
 # extrinsics (hand-eye) come from the handeye run that referenced that YAML.
+# Left/right eyes each have their own hand-eye optical->base transform.
 DEFAULT_NEW_INTRINSICS_FILE = "/home/robot/yx/calib/robot-twoeyes/data/calib_images/20260624134100/calibration_result.json"
 DEFAULT_NEW_INTRINSICS_YAML = "/home/robot/yx/calib/robot-twoeyes/data/calib_images/20260624134100/stereo_calibration.yaml"
-DEFAULT_HANDEYE_FILE = "/home/robot/yx/calib/hand_eye/handeye_data/20260624_140033/handeye_result.json"
+DEFAULT_HANDEYE_LEFT_FILE = "/home/robot/yx/calib/hand_eye/handeye_data/20260625_144450/handeye_result_left.json"
+DEFAULT_HANDEYE_RIGHT_FILE = "/home/robot/yx/calib/hand_eye/handeye_data/20260625_144450/handeye_result_right.json"
 # URDF carrying the d435 camera joint (nominal/pre-calibration extrinsics). The
 # viewer's own g1_d.urdf has no camera link, so we look in the parent project.
 DEFAULT_URDF_FILE = "/home/robot/vision_arm_control/g1_d.urdf"
 
 
-def _load_left_intrinsics_file(path: str | Path) -> dict[str, float]:
-    """Read left-camera fx/fy/cx/cy from a stereo calibration file.
+def _load_intrinsics_file(path: str | Path, *, json_key: str = "left_camera",
+                          yaml_key: str = "left_camera_matrix") -> dict[str, float]:
+    """Read one camera's fx/fy/cx/cy from a stereo calibration file.
 
-    Supports the ``calibration_result.json`` schema (``left_camera.camera_matrix``)
-    with the stdlib only, and the OpenCV ``stereo_calibration.yaml``
-    (``left_camera_matrix``) via ``cv2.FileStorage``.
+    Supports the ``calibration_result.json`` schema (``<json_key>.camera_matrix``)
+    with the stdlib only, and the OpenCV ``stereo_calibration.yaml`` (``<yaml_key>``)
+    via ``cv2.FileStorage``. Pass ``json_key="right_camera"`` /
+    ``yaml_key="right_camera_matrix"`` for the right eye.
     """
     path = Path(path)
     if path.suffix.lower() in (".yaml", ".yml"):
@@ -86,27 +94,37 @@ def _load_left_intrinsics_file(path: str | Path) -> dict[str, float]:
 
         fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
         try:
-            node = fs.getNode("left_camera_matrix")
+            node = fs.getNode(yaml_key)
             K = node.mat() if node is not None else None
         finally:
             fs.release()
         if K is None:
-            raise ValueError(f"left_camera_matrix not found in {path}")
+            raise ValueError(f"{yaml_key} not found in {path}")
         return {"fx": float(K[0, 0]), "fy": float(K[1, 1]),
                 "cx": float(K[0, 2]), "cy": float(K[1, 2])}
     data = json.loads(path.read_text(encoding="utf-8"))
-    K = data["left_camera"]["camera_matrix"]
+    K = data[json_key]["camera_matrix"]
     return {"fx": float(K[0][0]), "fy": float(K[1][1]),
             "cx": float(K[0][2]), "cy": float(K[1][2])}
 
 
-def _load_left_dist_coeffs_file(path: str | Path) -> list[float]:
-    """Read left-camera distortion coeffs ``[k1, k2, p1, p2, k3]`` from calibration.
+def _load_left_intrinsics_file(path: str | Path) -> dict[str, float]:
+    return _load_intrinsics_file(path, json_key="left_camera", yaml_key="left_camera_matrix")
 
-    Supports ``calibration_result.json`` (``left_camera.dist_coeffs``, stored as a
+
+def _load_right_intrinsics_file(path: str | Path) -> dict[str, float]:
+    return _load_intrinsics_file(path, json_key="right_camera", yaml_key="right_camera_matrix")
+
+
+def _load_dist_coeffs_file(path: str | Path, *, json_key: str = "left_camera",
+                           yaml_keys: tuple[str, ...] = (
+                               "left_distortion_coefficients", "left_dist_coeffs", "left_distortion")) -> list[float]:
+    """Read one camera's distortion coeffs ``[k1, k2, p1, p2, k3]`` from calibration.
+
+    Supports ``calibration_result.json`` (``<json_key>.dist_coeffs``, stored as a
     nested ``[[...]]``) with the stdlib, and the OpenCV ``stereo_calibration.yaml``
-    (``left_distortion_coefficients``) via ``cv2.FileStorage``. Always returns 5
-    floats so it maps directly onto the YOLO service's ``k1,k2,p1,p2,k3`` param.
+    (first matching ``yaml_keys``) via ``cv2.FileStorage``. Always returns 5 floats
+    so it maps directly onto the YOLO service's ``k1,k2,p1,p2,k3`` param.
     """
     path = Path(path)
     if path.suffix.lower() in (".yaml", ".yml"):
@@ -115,7 +133,7 @@ def _load_left_dist_coeffs_file(path: str | Path) -> list[float]:
         fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
         try:
             D = None
-            for key in ("left_distortion_coefficients", "left_dist_coeffs", "left_distortion"):
+            for key in yaml_keys:
                 node = fs.getNode(key)
                 if node is not None and not node.empty():
                     D = node.mat()
@@ -123,14 +141,24 @@ def _load_left_dist_coeffs_file(path: str | Path) -> list[float]:
         finally:
             fs.release()
         if D is None:
-            raise ValueError(f"left distortion coeffs not found in {path}")
+            raise ValueError(f"distortion coeffs not found in {path}")
         flat = [float(v) for row in D.tolist() for v in (row if isinstance(row, list) else [row])]
     else:
         data = json.loads(path.read_text(encoding="utf-8"))
-        D = data["left_camera"]["dist_coeffs"]
+        D = data[json_key]["dist_coeffs"]
         flat = [float(v) for v in (D[0] if (isinstance(D, list) and D and isinstance(D[0], list)) else D)]
     out = (flat + [0.0, 0.0, 0.0, 0.0, 0.0])[:5]
     return out
+
+
+def _load_left_dist_coeffs_file(path: str | Path) -> list[float]:
+    return _load_dist_coeffs_file(path, json_key="left_camera")
+
+
+def _load_right_dist_coeffs_file(path: str | Path) -> list[float]:
+    return _load_dist_coeffs_file(
+        path, json_key="right_camera",
+        yaml_keys=("right_distortion_coefficients", "right_dist_coeffs", "right_distortion"))
 
 
 def _urdf_nominal_optical_to_base(urdf_path: Path, camera_child: str = "d435_link",
@@ -220,23 +248,34 @@ def _resolve_urdf_path() -> Path | None:
     return None
 
 
-def _load_our_method(intrinsics_path: str, handeye_path: str) -> None:
+def _load_our_method(intrinsics_path: str, handeye_path: str, handeye_right_path: str = "") -> None:
     """Load the calibration the viewer needs.
 
-    Extrinsics (hand-eye ``T_cam2base`` + nominal URDF) drive the grid's
+    Extrinsics (left/right hand-eye ``T_cam2base`` + nominal URDF) drive the grid's
     base-frame boxes and are loaded with the stdlib, so they work even when
     ``yolo_handeye_pick`` is unavailable. The our_method PnP box is loaded
     separately and best-effort.
     """
-    # NEW extrinsics: hand-eye optical->base, straight from the JSON.
+    # NEW LEFT extrinsics: left hand-eye optical->base, straight from the JSON.
     try:
         OUR["T"] = _load_T_cam2base_json(handeye_path)
         OUR["handeye"] = handeye_path
-        print(f"[extrinsics] hand-eye from {handeye_path}: "
+        print(f"[extrinsics] LEFT hand-eye from {handeye_path}: "
               f"cam_offset(torso)={[round(float(v), 4) for v in OUR['T'][:3, 3]]}", flush=True)
     except (Exception, SystemExit) as exc:
         OUR["T"] = None
-        print(f"[extrinsics] hand-eye unavailable ({exc})", flush=True)
+        print(f"[extrinsics] LEFT hand-eye unavailable ({exc})", flush=True)
+
+    # NEW RIGHT extrinsics: right hand-eye optical->base, for the right-eye combos.
+    if handeye_right_path:
+        try:
+            OUR["T_right"] = _load_T_cam2base_json(handeye_right_path)
+            OUR["handeye_right"] = handeye_right_path
+            print(f"[extrinsics] RIGHT hand-eye from {handeye_right_path}: "
+                  f"cam_offset(torso)={[round(float(v), 4) for v in OUR['T_right'][:3, 3]]}", flush=True)
+        except (Exception, SystemExit) as exc:
+            OUR["T_right"] = None
+            print(f"[extrinsics] RIGHT hand-eye unavailable ({exc})", flush=True)
 
     # OLD extrinsics: nominal URDF (pre-calibration) optical->base.
     try:
@@ -282,6 +321,25 @@ def _optical_center_m(payload: dict[str, Any]):
     return np.array([float(p_mm[0]), float(p_mm[1]), float(p_mm[2])], dtype=float) / 1000.0
 
 
+def _optical_center_right_m(payload: dict[str, Any]):
+    """Right-eye optical center point (meters, right_camera_optical) from a payload.
+
+    The YOLO service nests the right-eye result under ``payload["right"]`` with its
+    own ``center_xyz_mm`` (mm, right_camera_optical frame).
+    """
+    if not isinstance(payload, dict):
+        return None
+    right = payload.get("right")
+    if not isinstance(right, dict):
+        return None
+    p_mm = right.get("center_xyz_mm")
+    if not p_mm or len(p_mm) < 3:
+        return None
+    import numpy as np
+
+    return np.array([float(p_mm[0]), float(p_mm[1]), float(p_mm[2])], dtype=float) / 1000.0
+
+
 def _to_base(T, p_opt):
     import numpy as np
 
@@ -303,16 +361,23 @@ def _inject_base_coords(
       * c_new_new_m      : NEW intrinsics point + OUR hand-eye extrinsics   (新内参+新外参)
       * c_new_old_m      : NEW intrinsics point + nominal URDF extrinsics   (新内参+老外参)
       * c_new_new_dist_m : NEW intrinsics + distortion + OUR hand-eye       (新内参+新外参+畸变校正)
+    Plus the RIGHT eye (right_camera_optical -> base via right hand-eye):
+      * c_right_new_m      : RIGHT NEW intrinsics + RIGHT hand-eye           (右眼 新内+新外)
+      * c_right_new_dist_m : RIGHT NEW intrinsics + distortion + RIGHT hand-eye (右眼 新内+新外+畸变)
     ``pose`` carries the NEW-intrinsics payload (dist=0); ``payload_old`` the OLD
     one (dist=0); ``payload_new_dist`` the NEW intrinsics WITH distortion coeffs.
+    The right-eye no-dist point rides on ``pose`` (right dist=0); the right-eye
+    distortion-corrected point rides on ``payload_new_dist`` (right dist on).
     delta_ex_mm = ①->② (extrinsic effect); delta_in_mm = ②->③ (intrinsic effect);
-    delta_dist_mm = ③->⑥ (distortion-correction effect, same intrinsics+extrinsics).
+    delta_dist_mm = ③->⑤ (left distortion effect);
+    delta_right_dist_mm = ⑥->⑦ (right distortion effect).
     """
     if not isinstance(pose, dict):
         return
-    T_he = OUR.get("T")          # our hand-eye, optical -> base (4x4)
+    T_he = OUR.get("T")          # our LEFT hand-eye, optical -> base (4x4)
     T_urdf = OUR.get("T_urdf")   # nominal URDF, optical -> base (4x4)
-    if T_he is None and T_urdf is None:
+    T_right = OUR.get("T_right") # our RIGHT hand-eye, optical -> base (4x4)
+    if T_he is None and T_urdf is None and T_right is None:
         return
     try:
         import numpy as np
@@ -320,9 +385,13 @@ def _inject_base_coords(
         p_new = _optical_center_m(pose)
         p_old = _optical_center_m(payload_old) if payload_old is not None else None
         p_new_dist = _optical_center_m(payload_new_dist) if payload_new_dist is not None else None
+        p_right = _optical_center_right_m(pose)
+        p_right_dist = _optical_center_right_m(payload_new_dist) if payload_new_dist is not None else None
 
         out: dict[str, Any] = {"ok": True, "intrinsics_old": OLD_INTRINSICS, "intrinsics_new": NEW_INTRINSICS,
-                               "dist_coeffs_new": [round(float(v), 6) for v in NEW_DIST]}
+                               "intrinsics_new_right": NEW_INTRINSICS_RIGHT,
+                               "dist_coeffs_new": [round(float(v), 6) for v in NEW_DIST],
+                               "dist_coeffs_new_right": [round(float(v), 6) for v in NEW_DIST_RIGHT]}
         if p_old is not None:
             out["p_old_optical_mm"] = [round(float(v) * 1000.0, 1) for v in p_old]
         if p_new is not None:
@@ -333,8 +402,11 @@ def _inject_base_coords(
             out["cam_old_ex_m"] = [round(float(v), 4) for v in T_urdf[:3, 3]]
         if T_he is not None:
             out["cam_new_ex_m"] = [round(float(v), 4) for v in T_he[:3, 3]]
+        if T_right is not None:
+            out["cam_right_ex_m"] = [round(float(v), 4) for v in T_right[:3, 3]]
 
         c_old_old = c_old_new = c_new_new = c_new_old = c_new_new_dist = None
+        c_right_new = c_right_new_dist = None
         if p_old is not None and T_urdf is not None:
             c_old_old = _to_base(T_urdf, p_old)
             out["c_old_old_m"] = [round(float(v), 4) for v in c_old_old]
@@ -347,10 +419,18 @@ def _inject_base_coords(
         if p_new is not None and T_urdf is not None:
             c_new_old = _to_base(T_urdf, p_new)
             out["c_new_old_m"] = [round(float(v), 4) for v in c_new_old]
-        # ⑥ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
+        # ⑤ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
         if p_new_dist is not None and T_he is not None:
             c_new_new_dist = _to_base(T_he, p_new_dist)
             out["c_new_new_dist_m"] = [round(float(v), 4) for v in c_new_new_dist]
+        # ⑥ 右眼 新内参 + 新外参: RIGHT NEW-intrinsics point (dist=0) + RIGHT hand-eye.
+        if p_right is not None and T_right is not None:
+            c_right_new = _to_base(T_right, p_right)
+            out["c_right_new_m"] = [round(float(v), 4) for v in c_right_new]
+        # ⑦ 右眼 新内参 + 新外参 + 畸变校正: RIGHT NEW-intrinsics undistorted + RIGHT hand-eye.
+        if p_right_dist is not None and T_right is not None:
+            c_right_new_dist = _to_base(T_right, p_right_dist)
+            out["c_right_new_dist_m"] = [round(float(v), 4) for v in c_right_new_dist]
 
         if c_old_old is not None and c_old_new is not None:
             out["delta_ex_mm"] = round(float(np.linalg.norm(c_old_old - c_old_new)) * 1000.0, 1)
@@ -358,6 +438,8 @@ def _inject_base_coords(
             out["delta_in_mm"] = round(float(np.linalg.norm(c_old_new - c_new_new)) * 1000.0, 1)
         if c_new_new is not None and c_new_new_dist is not None:
             out["delta_dist_mm"] = round(float(np.linalg.norm(c_new_new - c_new_new_dist)) * 1000.0, 1)
+        if c_right_new is not None and c_right_new_dist is not None:
+            out["delta_right_dist_mm"] = round(float(np.linalg.norm(c_right_new - c_right_new_dist)) * 1000.0, 1)
         pose["base_coords"] = out
     except (Exception, SystemExit) as exc:
         pose["base_coords"] = {"ok": False, "error": str(exc)}
@@ -707,6 +789,55 @@ def _fetch_json(url: str, timeout_sec: float) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=float(timeout_sec)) as response:
         return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def _post_json(url: str, body: dict[str, Any], timeout_sec: float) -> dict[str, Any]:
+    data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=float(timeout_sec)) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def _pose_url_from(source_url: str) -> str:
+    """Derive the POST /pose endpoint from a configured /xyz source URL."""
+    parsed = urllib.parse.urlparse(source_url)
+    path = parsed.path or ""
+    if path.rstrip("/").endswith("/xyz"):
+        path = path.rstrip("/")[: -len("/xyz")] + "/pose"
+    elif not path.rstrip("/").endswith("/pose"):
+        path = path.rstrip("/") + "/pose"
+    return urllib.parse.urlunparse(parsed._replace(path=path, query=""))
+
+
+def _fetch_xyz_or_pose(source_url: str, pose_url: str, label: str,
+                       intr: dict[str, float], dist: list[float],
+                       intr_right: dict[str, float], dist_right: list[float],
+                       timeout_sec: float) -> dict[str, Any]:
+    """Fetch one combo. Prefer GET /xyz (lightweight compact output, which now
+    carries the top-level ``right`` block too); fall back to POST /pose (full
+    output, also has ``right``) only if /xyz fails.
+
+    Both eyes' intrinsics + distortion are passed so the service returns the left
+    point (top level) and the right point (``right`` block) under our calibration.
+    """
+    query = {
+        "label": label,
+        **{k: str(v) for k, v in intr.items()},
+        "dist_coeffs": ",".join(str(v) for v in dist),
+        **{f"{k}_right": str(v) for k, v in intr_right.items()},
+        "dist_coeffs_right": ",".join(str(v) for v in dist_right),
+    }
+    try:
+        return _fetch_json(_merge_query(source_url, query), timeout_sec)
+    except Exception:
+        body: dict[str, Any] = {**intr, "dist_coeffs": list(dist),
+                                **{f"{k}_right": v for k, v in intr_right.items()},
+                                "dist_coeffs_right": list(dist_right)}
+        if label:
+            body["label"] = label
+        return _post_json(pose_url, body, timeout_sec)
 
 
 def _read_member(obj: Any, name: str, default: Any = None) -> Any:
@@ -1112,36 +1243,38 @@ def make_handler(
                 label = query.get("label", [""])[-1]
                 # Our own PnP (4th box) is injected ONLY when the frontend opts in.
                 use_our = query.get("our", ["0"])[-1].strip().lower() in ("1", "true", "yes", "on")
-                # Fetch YOLO three times, since the service's mono-PnP 3D point
-                # depends on fx/fy/cx/cy AND the distortion coeffs:
-                #   url_new      NEW intrinsics, dist=0  -> ③ primary pose
-                #   url_old      OLD intrinsics, dist=0  -> ① / ②
-                #   url_new_dist NEW intrinsics + NEW dist coeffs -> ⑥ (undistorted)
-                # Non-corrected combos send dist_coeffs=0 explicitly so the service
-                # does NOT undistort, keeping the intrinsics-only comparison clean.
-                intr_new = {k: str(v) for k, v in NEW_INTRINSICS.items()}
-                intr_old = {k: str(v) for k, v in OLD_INTRINSICS.items()}
-                zero_dist = ",".join(str(v) for v in ZERO_DIST)
-                new_dist = ",".join(str(v) for v in NEW_DIST)
-                url_new = _merge_query(source_url, {"label": label, **intr_new, "dist_coeffs": zero_dist})
-                url_old = _merge_query(source_url, {"label": label, **intr_old, "dist_coeffs": zero_dist})
-                url_new_dist = _merge_query(source_url, {"label": label, **intr_new, "dist_coeffs": new_dist})
+                # Fetch GET /xyz three times (lightweight compact output, which now
+                # also carries the top-level "right" block). The service's mono-PnP
+                # 3D point depends on the intrinsics AND distortion coeffs, so each
+                # fetch varies them:
+                #   payload          left NEW dist=0,  right NEW dist=0  -> ③ left, ⑥ right
+                #   payload_old      left OLD dist=0,  right NEW dist=0  -> ① / ②
+                #   payload_new_dist left NEW left-dist, right NEW right-dist -> ⑤ left, ⑦ right
+                # Non-corrected combos send dist=0 so the service does NOT undistort.
+                # Each fetch falls back to POST /pose if /xyz is unavailable.
+                pose_url = _pose_url_from(source_url)
+                ir = NEW_INTRINSICS_RIGHT
+
+                def _combo(left_intr, left_dist, right_dist):
+                    return _fetch_xyz_or_pose(source_url, pose_url, label,
+                                              left_intr, left_dist, ir, right_dist, timeout_sec)
+
                 try:
-                    payload = _fetch_json(url_new, timeout_sec)
+                    payload = _combo(NEW_INTRINSICS, ZERO_DIST, ZERO_DIST)
                     try:
-                        payload_old = _fetch_json(url_old, timeout_sec)
+                        payload_old = _combo(OLD_INTRINSICS, ZERO_DIST, ZERO_DIST)
                     except Exception:
                         payload_old = None
                     try:
-                        payload_new_dist = _fetch_json(url_new_dist, timeout_sec)
+                        payload_new_dist = _combo(NEW_INTRINSICS, NEW_DIST, NEW_DIST_RIGHT)
                     except Exception:
                         payload_new_dist = None
                     _inject_base_coords(payload, payload_old, payload_new_dist)
                     if use_our:
                         _inject_our_method(payload)
-                    _json_response(self, 200 if payload.get("ok", True) else 502, {"ok": True, "url": url_new, "pose": payload})
+                    _json_response(self, 200 if payload.get("ok", True) else 502, {"ok": True, "url": source_url, "pose": payload})
                 except Exception as exc:
-                    _json_response(self, 502, {"ok": False, "url": url_new, "error": str(exc)})
+                    _json_response(self, 502, {"ok": False, "url": source_url, "error": str(exc)})
                 return
             if parsed.path == "/api/robot_state":
                 query = urllib.parse.parse_qs(parsed.query)
@@ -1202,7 +1335,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--our-intrinsics", default="",
                         help=f"our_method stereo_calibration.yaml (default: {DEFAULT_NEW_INTRINSICS_YAML})")
     parser.add_argument("--our-handeye", default="",
-                        help=f"our_method handeye_result.json (default: {DEFAULT_HANDEYE_FILE})")
+                        help=f"LEFT-eye handeye_result_left.json (default: {DEFAULT_HANDEYE_LEFT_FILE})")
+    parser.add_argument("--our-handeye-right", default="",
+                        help=f"RIGHT-eye handeye_result_right.json (default: {DEFAULT_HANDEYE_RIGHT_FILE})")
     parser.add_argument("--arm-network-interface", default="",
                         help="DDS interface for the arm executor on 真机执行 (empty = SDK default)")
     parser.add_argument("--suction-host", default="192.168.123.164",
@@ -1211,30 +1346,44 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global NEW_INTRINSICS, NEW_DIST
+    global NEW_INTRINSICS, NEW_DIST, NEW_INTRINSICS_RIGHT, NEW_DIST_RIGHT
     args = build_arg_parser().parse_args()
     if not VIEWER_DIR.exists():
         raise FileNotFoundError(f"viewer directory not found: {VIEWER_DIR}")
 
     # NEW intrinsics for the grid (?fx&fy&cx&cy) are read from a calibration file;
     # fall back to the hard-coded NEW_INTRINSICS if the file can't be read. The
-    # matching distortion coeffs (only the ⑥ combo uses them) come from the same
-    # file; missing coeffs fall back to zeros (= no undistortion).
+    # matching distortion coeffs (only the distortion combos use them) come from the
+    # same file; missing coeffs fall back to zeros (= no undistortion). Both eyes
+    # are read from the same stereo calibration (left_camera / right_camera).
     new_intr_file = args.new_intrinsics_file or DEFAULT_NEW_INTRINSICS_FILE
     if new_intr_file:
         try:
             NEW_INTRINSICS = _load_left_intrinsics_file(new_intr_file)
-            print(f"[intrinsics] NEW from {new_intr_file}: "
+            print(f"[intrinsics] LEFT NEW from {new_intr_file}: "
                   f"fx={NEW_INTRINSICS['fx']:.2f} fy={NEW_INTRINSICS['fy']:.2f} "
                   f"cx={NEW_INTRINSICS['cx']:.2f} cy={NEW_INTRINSICS['cy']:.2f}", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[intrinsics] NEW file unavailable ({exc}); using fallback {NEW_INTRINSICS}", flush=True)
+            print(f"[intrinsics] LEFT NEW file unavailable ({exc}); using fallback {NEW_INTRINSICS}", flush=True)
         try:
             NEW_DIST = _load_left_dist_coeffs_file(new_intr_file)
-            print(f"[dist] NEW from {new_intr_file}: "
+            print(f"[dist] LEFT NEW from {new_intr_file}: "
                   f"{[round(v, 6) for v in NEW_DIST]}", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[dist] NEW dist unavailable ({exc}); using zeros (no undistortion)", flush=True)
+            print(f"[dist] LEFT NEW dist unavailable ({exc}); using zeros (no undistortion)", flush=True)
+        try:
+            NEW_INTRINSICS_RIGHT = _load_right_intrinsics_file(new_intr_file)
+            print(f"[intrinsics] RIGHT NEW from {new_intr_file}: "
+                  f"fx={NEW_INTRINSICS_RIGHT['fx']:.2f} fy={NEW_INTRINSICS_RIGHT['fy']:.2f} "
+                  f"cx={NEW_INTRINSICS_RIGHT['cx']:.2f} cy={NEW_INTRINSICS_RIGHT['cy']:.2f}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[intrinsics] RIGHT NEW file unavailable ({exc}); using fallback {NEW_INTRINSICS_RIGHT}", flush=True)
+        try:
+            NEW_DIST_RIGHT = _load_right_dist_coeffs_file(new_intr_file)
+            print(f"[dist] RIGHT NEW from {new_intr_file}: "
+                  f"{[round(v, 6) for v in NEW_DIST_RIGHT]}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dist] RIGHT NEW dist unavailable ({exc}); using zeros (no undistortion)", flush=True)
 
     if args.our_method:
         scripts_dir = Path(__file__).resolve().parents[3]
@@ -1243,8 +1392,9 @@ def main() -> int:
         # Default our_method intrinsics/hand-eye to the same calibration run as the
         # grid's NEW intrinsics, so every "new" estimate shares one calibration.
         intrinsics = args.our_intrinsics or DEFAULT_NEW_INTRINSICS_YAML
-        handeye = args.our_handeye or DEFAULT_HANDEYE_FILE
-        _load_our_method(intrinsics, handeye)
+        handeye = args.our_handeye or DEFAULT_HANDEYE_LEFT_FILE
+        handeye_right = args.our_handeye_right or DEFAULT_HANDEYE_RIGHT_FILE
+        _load_our_method(intrinsics, handeye, handeye_right)
     server = ThreadingHTTPServer(
         (args.bind, int(args.port)),
         make_handler(

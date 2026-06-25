@@ -74,9 +74,41 @@
             <input id="showNewNewDist" type="checkbox" checked />
             <span>⑤ 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
           </label>
+          <label class="method-check method-right">
+            <input id="showRightNew" type="checkbox" checked />
+            <span>⑥ 右眼 新内参 + 新外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-rightdist">
+            <input id="showRightNewDist" type="checkbox" checked />
+            <span>⑦ 右眼 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
+          </label>
           <label class="method-check">
             <input id="centerOnly" type="checkbox" />
             <span>只显示中心点（隐藏盒子外形）</span>
+          </label>
+          <label class="method-check">
+            <input id="showXPlane" type="checkbox" />
+            <span>显示基座 X 平面</span>
+          </label>
+          <label class="field">
+            <span>X 位置 mm</span>
+            <input id="xPlaneMm" type="number" step="10" value="0" />
+          </label>
+          <label class="method-check">
+            <input id="showYPlane" type="checkbox" />
+            <span>显示基座 Y 平面</span>
+          </label>
+          <label class="field">
+            <span>Y 位置 mm</span>
+            <input id="yPlaneMm" type="number" step="10" value="0" />
+          </label>
+          <label class="method-check">
+            <input id="showZPlane" type="checkbox" />
+            <span>显示基座 Z 平面</span>
+          </label>
+          <label class="field">
+            <span>Z 高度 mm</span>
+            <input id="zPlaneMm" type="number" step="10" value="0" />
           </label>
         </div>
 
@@ -97,9 +129,12 @@
             <div><dt>③ 新内参 + 新外参</dt><dd id="baseCoordNewNew">-</dd></div>
             <div><dt>④ 新内参 + 老外参</dt><dd id="baseCoordNewOld">-</dd></div>
             <div><dt>⑤ 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordNewDist">-</dd></div>
+            <div><dt>⑥ 右眼 新内参 + 新外参</dt><dd id="baseCoordRightNew">-</dd></div>
+            <div><dt>⑦ 右眼 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordRightNewDist">-</dd></div>
             <div><dt>外参差 (①→②)</dt><dd id="baseCoordDeltaEx">-</dd></div>
             <div><dt>内参差 (②→③)</dt><dd id="baseCoordDeltaIn">-</dd></div>
-            <div><dt>畸变差 (③→⑤)</dt><dd id="baseCoordDeltaDist">-</dd></div>
+            <div><dt>左眼畸变差 (③→⑤)</dt><dd id="baseCoordDeltaDist">-</dd></div>
+            <div><dt>右眼畸变差 (⑥→⑦)</dt><dd id="baseCoordDeltaRightDist">-</dd></div>
           </dl>
           <div class="button-row data-row">
             <button id="baseCoordRefresh" class="primary-action" type="button">获取基座坐标</button>

@@ -50,9 +50,12 @@ const dom = {
   baseCoordNewNew: document.querySelector("#baseCoordNewNew"),
   baseCoordNewOld: document.querySelector("#baseCoordNewOld"),
   baseCoordNewDist: document.querySelector("#baseCoordNewDist"),
+  baseCoordRightNew: document.querySelector("#baseCoordRightNew"),
+  baseCoordRightNewDist: document.querySelector("#baseCoordRightNewDist"),
   baseCoordDeltaEx: document.querySelector("#baseCoordDeltaEx"),
   baseCoordDeltaIn: document.querySelector("#baseCoordDeltaIn"),
   baseCoordDeltaDist: document.querySelector("#baseCoordDeltaDist"),
+  baseCoordDeltaRightDist: document.querySelector("#baseCoordDeltaRightDist"),
   baseCoordRefresh: document.querySelector("#baseCoordRefresh"),
   baseCoordStatus: document.querySelector("#baseCoordStatus"),
   selectAllMethods: document.querySelector("#selectAllMethods"),
@@ -68,7 +71,15 @@ const dom = {
   showNewNew: document.querySelector("#showNewNew"),
   showNewOld: document.querySelector("#showNewOld"),
   showNewNewDist: document.querySelector("#showNewNewDist"),
+  showRightNew: document.querySelector("#showRightNew"),
+  showRightNewDist: document.querySelector("#showRightNewDist"),
   centerOnly: document.querySelector("#centerOnly"),
+  showXPlane: document.querySelector("#showXPlane"),
+  xPlaneMm: document.querySelector("#xPlaneMm"),
+  showYPlane: document.querySelector("#showYPlane"),
+  yPlaneMm: document.querySelector("#yPlaneMm"),
+  showZPlane: document.querySelector("#showZPlane"),
+  zPlaneMm: document.querySelector("#zPlaneMm"),
   autoRefresh: document.querySelector("#autoRefresh"),
   autoInterval: document.querySelector("#autoInterval"),
 };
@@ -104,7 +115,8 @@ scene.add(root);
 const robotGroup = new THREE.Group();
 const cigaretteGroup = new THREE.Group();
 const cameraMarkerGroup = new THREE.Group();
-root.add(robotGroup, cigaretteGroup, cameraMarkerGroup);
+const zPlaneGroup = new THREE.Group();
+root.add(robotGroup, cigaretteGroup, cameraMarkerGroup, zPlaneGroup);
 
 const materials = {
   robot: new THREE.MeshStandardMaterial({ color: 0x9fb8c8, roughness: 0.75, metalness: 0.05 }),
@@ -195,11 +207,12 @@ function bindEvents() {
   if (dom.baseCoordRefresh) {
     dom.baseCoordRefresh.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
   }
-  const methodToggles = () => [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist];
+  const methodToggles = () => [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist];
   const setAllMethods = (checked) => {
     for (const toggle of methodToggles()) {
       if (toggle) toggle.checked = checked;
     }
+    updateBaseCoordVisibility();
     if (currentPose) {
       renderPose(currentPose, { frame: false });
       updateMetrics(currentPose);
@@ -216,15 +229,23 @@ function bindEvents() {
       if (currentPose) renderPose(currentPose, { frame: false });
     });
   }
-  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.centerOnly]) {
+  for (const el of [dom.showXPlane, dom.showYPlane, dom.showZPlane]) {
+    if (el) el.addEventListener("change", () => updateBasePlanes());
+  }
+  for (const el of [dom.xPlaneMm, dom.yPlaneMm, dom.zPlaneMm]) {
+    if (el) el.addEventListener("input", () => updateBasePlanes());
+  }
+  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.centerOnly]) {
     if (!toggle) continue;
     toggle.addEventListener("change", () => {
+      updateBaseCoordVisibility();
       if (currentPose) {
         renderPose(currentPose, { frame: false });
         updateMetrics(currentPose);
       }
     });
   }
+  updateBaseCoordVisibility();
   if (dom.autoRefresh) dom.autoRefresh.addEventListener("change", applyAutoRefresh);
   if (dom.autoInterval) dom.autoInterval.addEventListener("change", applyAutoRefresh);
   applyAutoRefresh();
@@ -361,6 +382,8 @@ const BOX_EDGE_NEW = 0x4fd8ff;     // ② 老内参 + 新外参(青)
 const BOX_EDGE_NEWINTR = 0x59e6a7; // ③ 新内参 + 新外参(绿)
 const BOX_EDGE_NEWOLD = 0xffe14d;  // ④ 新内参 + 老外参(黄)
 const BOX_EDGE_NEWDIST = 0xff6fd8; // ⑤ 新内参 + 新外参 + 畸变校正(粉)
+const BOX_EDGE_RIGHT = 0x9d7bff;     // ⑥ 右眼 新内参 + 新外参(紫)
+const BOX_EDGE_RIGHTDIST = 0xff8c42; // ⑦ 右眼 新内参 + 新外参 + 畸变校正(橙红)
 
 function renderPose(pose, { frame = false } = {}) {
   cigaretteGroup.clear();
@@ -376,6 +399,8 @@ function renderPose(pose, { frame = false } = {}) {
   const wantNewNew = dom.showNewNew ? dom.showNewNew.checked : true; // ③ 新内+新外
   const wantNewOld = dom.showNewOld ? dom.showNewOld.checked : true; // ④ 新内+老外
   const wantNewDist = dom.showNewNewDist ? dom.showNewNewDist.checked : true; // ⑤ 新内+新外+畸变
+  const wantRightNew = dom.showRightNew ? dom.showRightNew.checked : true; // ⑥ 右眼 新内+新外
+  const wantRightNewDist = dom.showRightNewDist ? dom.showRightNewDist.checked : true; // ⑦ 右眼 新内+新外+畸变
   const centerOnly = dom.centerOnly ? dom.centerOnly.checked : false;
 
   const drawOldOld = wantOldOld && bc && Array.isArray(bc.c_old_old_m);
@@ -383,8 +408,10 @@ function renderPose(pose, { frame = false } = {}) {
   const drawNewNew = wantNewNew && bc && Array.isArray(bc.c_new_new_m);
   const drawNewOld = wantNewOld && bc && Array.isArray(bc.c_new_old_m);
   const drawNewDist = wantNewDist && bc && Array.isArray(bc.c_new_new_dist_m);
+  const drawRightNew = wantRightNew && bc && Array.isArray(bc.c_right_new_m);
+  const drawRightNewDist = wantRightNewDist && bc && Array.isArray(bc.c_right_new_dist_m);
 
-  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist) {
+  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist && !drawRightNew && !drawRightNewDist) {
     setStatus(bc ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
     if (dom.metricDelta) dom.metricDelta.textContent = "-";
     writeSceneState();
@@ -415,6 +442,8 @@ function renderPose(pose, { frame = false } = {}) {
   let cNewNew = null;
   let cNewOld = null;
   let cNewDist = null;
+  let cRightNew = null;
+  let cRightNewDist = null;
   let focus = null;
 
   // ① 老内参 + 老外参: OLD-intrinsics point + nominal URDF.
@@ -441,6 +470,16 @@ function renderPose(pose, { frame = false } = {}) {
   if (drawNewDist) {
     cNewDist = drawMethod(bc.c_new_new_dist_m, yawQuat, BOX_EDGE_NEWDIST, "⑤新内+新外+畸变", "⑤", bc.cam_new_ex_m);
     if (!focus) focus = cNewDist;
+  }
+  // ⑥ 右眼 新内参 + 新外参: right-eye NEW point (dist=0) + right hand-eye.
+  if (drawRightNew) {
+    cRightNew = drawMethod(bc.c_right_new_m, yawQuat, BOX_EDGE_RIGHT, "⑥右眼新内+新外", "⑥", bc.cam_right_ex_m);
+    if (!focus) focus = cRightNew;
+  }
+  // ⑦ 右眼 新内参 + 新外参 + 畸变校正: right-eye undistorted point + right hand-eye.
+  if (drawRightNewDist) {
+    cRightNewDist = drawMethod(bc.c_right_new_dist_m, yawQuat, BOX_EDGE_RIGHTDIST, "⑦右眼新内+新外+畸变", "⑦", bc.cam_right_ex_m);
+    if (!focus) focus = cRightNewDist;
   }
 
   // metricDelta = 外参差(①→②, 同一 OLD 内参点, 仅外参不同)。
@@ -501,14 +540,37 @@ function formatBaseCoordMm(m) {
   return `[${(m[0] * 1000).toFixed(0)}, ${(m[1] * 1000).toFixed(0)}, ${(m[2] * 1000).toFixed(0)}] mm`;
 }
 
+// Show only the rows whose method checkbox is ticked above; a delta row shows
+// only when BOTH of its endpoint methods are ticked.
+function updateBaseCoordVisibility() {
+  const ck = (el) => (el ? el.checked : true);
+  const setRow = (dd, visible) => {
+    if (dd && dd.parentElement) dd.parentElement.style.display = visible ? "" : "none";
+  };
+  setRow(dom.baseCoordOldOld, ck(dom.showOldOld));
+  setRow(dom.baseCoordOldNew, ck(dom.showOldNew));
+  setRow(dom.baseCoordNewNew, ck(dom.showNewNew));
+  setRow(dom.baseCoordNewOld, ck(dom.showNewOld));
+  setRow(dom.baseCoordNewDist, ck(dom.showNewNewDist));
+  setRow(dom.baseCoordRightNew, ck(dom.showRightNew));
+  setRow(dom.baseCoordRightNewDist, ck(dom.showRightNewDist));
+  setRow(dom.baseCoordDeltaEx, ck(dom.showOldOld) && ck(dom.showOldNew));
+  setRow(dom.baseCoordDeltaIn, ck(dom.showOldNew) && ck(dom.showNewNew));
+  setRow(dom.baseCoordDeltaDist, ck(dom.showNewNew) && ck(dom.showNewNewDist));
+  setRow(dom.baseCoordDeltaRightDist, ck(dom.showRightNew) && ck(dom.showRightNewDist));
+}
+
 function updateBaseCoordMetrics(pose) {
   const bc = pose && pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
 
+  updateBaseCoordVisibility();
   if (dom.baseCoordOldOld) dom.baseCoordOldOld.textContent = bc ? formatBaseCoordMm(bc.c_old_old_m) : "-";
   if (dom.baseCoordOldNew) dom.baseCoordOldNew.textContent = bc ? formatBaseCoordMm(bc.c_old_new_m) : "-";
   if (dom.baseCoordNewNew) dom.baseCoordNewNew.textContent = bc ? formatBaseCoordMm(bc.c_new_new_m) : "-";
   if (dom.baseCoordNewOld) dom.baseCoordNewOld.textContent = bc ? formatBaseCoordMm(bc.c_new_old_m) : "-";
   if (dom.baseCoordNewDist) dom.baseCoordNewDist.textContent = bc ? formatBaseCoordMm(bc.c_new_new_dist_m) : "-";
+  if (dom.baseCoordRightNew) dom.baseCoordRightNew.textContent = bc ? formatBaseCoordMm(bc.c_right_new_m) : "-";
+  if (dom.baseCoordRightNewDist) dom.baseCoordRightNewDist.textContent = bc ? formatBaseCoordMm(bc.c_right_new_dist_m) : "-";
   if (dom.baseCoordDeltaEx) {
     dom.baseCoordDeltaEx.textContent = bc && bc.delta_ex_mm != null ? `${Math.round(bc.delta_ex_mm)} mm` : "-";
   }
@@ -518,11 +580,14 @@ function updateBaseCoordMetrics(pose) {
   if (dom.baseCoordDeltaDist) {
     dom.baseCoordDeltaDist.textContent = bc && bc.delta_dist_mm != null ? `${Math.round(bc.delta_dist_mm)} mm` : "-";
   }
+  if (dom.baseCoordDeltaRightDist) {
+    dom.baseCoordDeltaRightDist.textContent = bc && bc.delta_right_dist_mm != null ? `${Math.round(bc.delta_right_dist_mm)} mm` : "-";
+  }
 
   if (dom.baseCoordStatus) {
     if (bc) {
       dom.baseCoordStatus.textContent =
-        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③, 畸变差=③→⑤)`;
+        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③, 左眼畸变差=③→⑤, 右眼畸变差=⑥→⑦)`;
     } else {
       dom.baseCoordStatus.textContent = "无目标点(未检测到目标, 或服务端未加载标定矩阵)";
     }
@@ -1044,6 +1109,61 @@ function updateCameraMarker() {
   body.quaternion.copy(frame.parentQuaternion);
   cameraMarkerGroup.add(body);
   addLabel(cameraMarkerGroup, "left camera", mount.clone().add(new THREE.Vector3(0.02, 0.02, 0.055)), "#9be2ff");
+  updateBasePlanes();
+}
+
+// Constant-coordinate planes in the base (torso_link) frame (X 前, Y 左, Z 上),
+// e.g. the Z=0 ground plane, or an X / Y slice. Each plane is defined in
+// torso-local coords so it follows the robot's torso as the column/waist move.
+// Useful to eyeball whether a box center sits at a given base-frame coordinate.
+function _addBasePlane(axis, valueMm, color, torsoPos, torsoQuat) {
+  const v = numberOrDefault(valueMm, 0) / 1000;
+  // Offset of the plane center along the chosen torso-local axis.
+  const offset = new THREE.Vector3(axis === "x" ? v : 0, axis === "y" ? v : 0, axis === "z" ? v : 0);
+  const center = torsoPos.clone().add(offset.applyQuaternion(torsoQuat));
+  // PlaneGeometry lies in local XY with normal +Z. Rotate so the normal aligns
+  // with the requested torso axis: +Z->+X via +90° about Y; +Z->+Y via -90° about X.
+  const localQuat = new THREE.Quaternion();
+  if (axis === "x") localQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+  else if (axis === "y") localQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+  const quat = torsoQuat.clone().multiply(localQuat);
+
+  const size = 2.4;
+  const segments = 24;
+  const fill = new THREE.Mesh(
+    new THREE.PlaneGeometry(size, size),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  fill.position.copy(center);
+  fill.quaternion.copy(quat);
+  zPlaneGroup.add(fill);
+
+  const grid = new THREE.LineSegments(
+    new THREE.WireframeGeometry(new THREE.PlaneGeometry(size, size, segments, segments)),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.28 }),
+  );
+  grid.position.copy(center);
+  grid.quaternion.copy(quat);
+  zPlaneGroup.add(grid);
+
+  const labelPos = center.clone().add(new THREE.Vector3(size / 2, size / 2, 0.02).applyQuaternion(quat));
+  addLabel(zPlaneGroup, `base ${axis.toUpperCase()}=${Math.round(v * 1000)}mm`, labelPos, `#${color.toString(16).padStart(6, "0")}`);
+}
+
+function updateBasePlanes() {
+  zPlaneGroup.clear();
+  const torso = getLinkWorldTransform(DEFAULT_CAMERA_PARENT_LINK);
+  const torsoPos = torso?.position?.clone() || new THREE.Vector3();
+  const torsoQuat = torso?.quaternion || new THREE.Quaternion();
+  if (dom.showXPlane && dom.showXPlane.checked) {
+    _addBasePlane("x", dom.xPlaneMm ? dom.xPlaneMm.value : 0, 0xff6f6f, torsoPos, torsoQuat);
+  }
+  if (dom.showYPlane && dom.showYPlane.checked) {
+    _addBasePlane("y", dom.yPlaneMm ? dom.yPlaneMm.value : 0, 0x6fdc6f, torsoPos, torsoQuat);
+  }
+  if (dom.showZPlane && dom.showZPlane.checked) {
+    _addBasePlane("z", dom.zPlaneMm ? dom.zPlaneMm.value : 0, 0x33c2ff, torsoPos, torsoQuat);
+  }
 }
 
 function getCameraMount() {
