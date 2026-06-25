@@ -42,6 +42,8 @@ from auto_pnp_cuboid_depth import (
     order_quad,
     parse_roi,
     solve_depth,
+    stereo_feature_plane,
+    triangulate_stereo_quad,
 )
 from yolo_topface_detector import YOLO_SELECT_METHODS, detect_yolo_points_from_image
 from cigarette_pose_alignment import compute_robot_alignment, configured_ground_basis
@@ -72,6 +74,16 @@ class PoseConfig:
     cx: float = 320.0
     cy: float = 240.0
     dist_coeffs: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0)
+    # Right camera intrinsics; None means "mirror the left camera" for backward compatibility.
+    fx_right: float | None = None
+    fy_right: float | None = None
+    cx_right: float | None = None
+    cy_right: float | None = None
+    dist_coeffs_right: tuple[float, ...] | None = None
+    # Stereo extrinsics (cv2.stereoCalibrate convention: X_right = R @ X_left + T,
+    # T in millimetres). None means stereo triangulation is unavailable.
+    stereo_R: tuple[float, ...] | None = None  # row-major 3x3 (9 values)
+    stereo_T: tuple[float, ...] | None = None  # 3 values, mm
     left_roi: tuple[int, int, int, int] | None = (190, 215, 500, 420)
     right_roi: tuple[int, int, int, int] | None = (170, 225, 385, 400)
     min_red_fraction: float = 0.0
@@ -125,6 +137,282 @@ def _intrinsics_assumption(config: PoseConfig) -> dict[str, Any]:
         "cx": float(config.cx),
         "cy": float(config.cy),
         "dist_coeffs": _config_dist(config),
+    }
+
+
+def _config_fx_right(config: PoseConfig) -> float:
+    return float(config.fx_right) if config.fx_right is not None else _config_fx(config)
+
+
+def _config_fy_right(config: PoseConfig) -> float:
+    return float(config.fy_right) if config.fy_right is not None else _config_fy(config)
+
+
+def _config_cx_right(config: PoseConfig) -> float:
+    return float(config.cx_right) if config.cx_right is not None else float(config.cx)
+
+
+def _config_cy_right(config: PoseConfig) -> float:
+    return float(config.cy_right) if config.cy_right is not None else float(config.cy)
+
+
+def _config_dist_right(config: PoseConfig) -> list[float]:
+    if config.dist_coeffs_right is not None:
+        return [float(value) for value in config.dist_coeffs_right]
+    return _config_dist(config)
+
+
+def _right_pose_block(
+    selected_right: dict[str, Any],
+    selected_orientation: str,
+    config: PoseConfig,
+) -> dict[str, Any]:
+    """Core right-camera pose, symmetric to the left primary output.
+
+    All coordinates are in the right camera optical frame (same axis convention
+    as the left: +X right, +Y down, +Z forward).
+    """
+    return {
+        "frame": "right_camera_optical",
+        "coordinate_system": optical_coordinate_convention(),
+        "selected_orientation": selected_orientation,
+        "center_xyz_mm": selected_right["center_xyz_mm"],
+        "x_mm": selected_right["x_mm"],
+        "y_mm": selected_right["y_mm"],
+        "z_mm": selected_right["z_mm"],
+        "depth_mm": selected_right["depth_mm"],
+        "optical_axis_depth_mm": selected_right["optical_axis_depth_mm"],
+        "range_from_right_camera_mm": selected_right["range_from_left_camera_mm"],
+        "direction_unit_xyz": selected_right["direction_unit_xyz"],
+        "coordinate_method": selected_right["coordinate_method"],
+        "opencv_camera_xyz_mm": selected_right["opencv_camera_xyz_mm"],
+        "pnp_center_xyz_mm": selected_right["pnp_center_xyz_mm"],
+        "vertical_up_unit_xyz": selected_right.get("top_plane_up_unit_xyz"),
+        "vertical_up_source": selected_right.get("top_plane_up_source"),
+        "top_plane_camera_to_vertical_deg": selected_right.get("top_plane_camera_to_vertical_deg"),
+        "near_edge_midpoint_xyz_mm": selected_right["near_edge_midpoint_xyz_mm"],
+        "box_head_point_xyz_mm": selected_right["box_head_point_xyz_mm"],
+        "reprojection_error_px": selected_right["reprojection_error_px"],
+        "points_px": selected_right["points_px"],
+        "object_top_size_mm": selected_right["object_top_size_mm"],
+        "intrinsics_assumption": _intrinsics_assumption_right(config),
+    }
+
+
+def parse_float_list(value: Any, expected: int | None = None) -> tuple[float, ...] | None:
+    """Parse a flat float list/tuple or comma/space-separated string.
+
+    Accepts a 3x3 nested list (flattened row-major) for convenience. Returns
+    None for empty/None input. Raises if `expected` length is not matched.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        numbers = [float(item) for item in text.replace(",", " ").split() if item]
+    elif isinstance(value, (list, tuple)):
+        flat: list[float] = []
+        for item in value:
+            if isinstance(item, (list, tuple)):
+                flat.extend(float(sub) for sub in item)
+            else:
+                flat.append(float(item))
+        numbers = flat
+    else:
+        raise ValueError("expected a list/tuple or comma-separated string of numbers")
+    if not numbers:
+        return None
+    if expected is not None and len(numbers) != expected:
+        raise ValueError(f"expected {expected} numbers, got {len(numbers)}")
+    return tuple(numbers)
+
+
+def _stereo_extrinsics(config: PoseConfig) -> tuple[np.ndarray, np.ndarray] | None:
+    if config.stereo_R is None or config.stereo_T is None:
+        return None
+    if len(config.stereo_R) != 9 or len(config.stereo_T) != 3:
+        return None
+    rotation = np.asarray(config.stereo_R, dtype=np.float64).reshape(3, 3)
+    translation = np.asarray(config.stereo_T, dtype=np.float64).reshape(3)
+    return rotation, translation
+
+
+def _stereo_pose_block(
+    left_points: np.ndarray,
+    right_points: np.ndarray | None,
+    config: PoseConfig,
+) -> dict[str, Any] | None:
+    """Metric stereo-triangulation pose in the left camera optical frame.
+
+    Returns None when the right view or stereo calibration is unavailable, so
+    callers transparently fall back to the monocular result.
+    """
+    if right_points is None:
+        return None
+    extrinsics = _stereo_extrinsics(config)
+    if extrinsics is None:
+        return None
+    rotation, translation = extrinsics
+
+    k_left = np.asarray(
+        [[_config_fx(config), 0.0, config.cx], [0.0, _config_fy(config), config.cy], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    k_right = np.asarray(
+        [
+            [_config_fx_right(config), 0.0, _config_cx_right(config)],
+            [0.0, _config_fy_right(config), _config_cy_right(config)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    tri = triangulate_stereo_quad(
+        np.asarray(left_points, dtype=np.float64).reshape(-1, 2),
+        np.asarray(right_points, dtype=np.float64).reshape(-1, 2),
+        k_left,
+        _config_dist(config),
+        k_right,
+        _config_dist_right(config),
+        rotation,
+        translation,
+    )
+
+    center = tri["center_xyz_mm"]
+    range_mm = _range_mm(center)
+    block = {
+        "available": True,
+        "method": "stereo_triangulation",
+        "frame": "left_camera_optical",
+        "coordinate_system": optical_coordinate_convention(),
+        "center_xyz_mm": center,
+        "x_mm": center[0],
+        "y_mm": center[1],
+        "z_mm": center[2],
+        "depth_mm": tri["center_depth_mm"],
+        "range_from_left_camera_mm": range_mm,
+        "direction_unit_xyz": _direction_unit(center) if range_mm > 1e-6 else [0.0, 0.0, 0.0],
+        "corner_xyz_mm": tri["corner_xyz_mm"],
+        "corner_depth_range_mm": tri["corner_depth_range_mm"],
+        "top_plane_normal_xyz": tri["top_plane_normal_xyz"],
+        "top_plane_camera_to_vertical_deg": round(
+            _camera_to_vertical_deg_from_up_unit(tri["top_plane_normal_xyz"]), 3
+        ),
+        "measured_top_size_mm": tri["measured_top_size_mm"],
+        "baseline_mm": tri["baseline_mm"],
+        "stereo_reprojection_error_px": tri["stereo_reprojection_error_px"],
+    }
+    return block
+
+
+def _stereo_plane_block(
+    left_image: np.ndarray | None,
+    right_image: np.ndarray | None,
+    left_points: np.ndarray | None,
+    config: PoseConfig,
+) -> dict[str, Any] | None:
+    """Feature-based stereo plane pose (independent of corner triangulation).
+
+    Returns None when images, the top-face quad, or stereo calibration are
+    unavailable, or when there is too little texture to get a stable fit, so
+    callers transparently fall back to the other methods.
+    """
+    if left_image is None or right_image is None or left_points is None:
+        return None
+    extrinsics = _stereo_extrinsics(config)
+    if extrinsics is None:
+        return None
+    rotation, translation = extrinsics
+
+    k_left = np.asarray(
+        [[_config_fx(config), 0.0, config.cx], [0.0, _config_fy(config), config.cy], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    k_right = np.asarray(
+        [
+            [_config_fx_right(config), 0.0, _config_cx_right(config)],
+            [0.0, _config_fy_right(config), _config_cy_right(config)],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    try:
+        plane = stereo_feature_plane(
+            left_image,
+            right_image,
+            np.asarray(left_points, dtype=np.float64).reshape(-1, 2),
+            k_left,
+            _config_dist(config),
+            k_right,
+            _config_dist_right(config),
+            rotation,
+            translation,
+        )
+    except cv2.error:
+        return None
+    if plane is None:
+        return None
+
+    center = plane["center_xyz_mm"]
+    range_mm = _range_mm(center)
+    normal = plane["top_plane_normal_xyz"]
+    return {
+        "available": True,
+        "method": "feature_epipolar_ransac",
+        "frame": "left_camera_optical",
+        "coordinate_system": optical_coordinate_convention(),
+        "center_xyz_mm": center,
+        "x_mm": center[0],
+        "y_mm": center[1],
+        "z_mm": center[2],
+        "depth_mm": plane["center_depth_mm"],
+        "range_from_left_camera_mm": range_mm,
+        "direction_unit_xyz": _direction_unit(center) if range_mm > 1e-6 else [0.0, 0.0, 0.0],
+        "top_plane_normal_xyz": normal,
+        "top_plane_camera_to_vertical_deg": round(_camera_to_vertical_deg_from_up_unit(normal), 3),
+        "long_axis_unit_xyz": plane["long_axis_unit_xyz"],
+        "num_features": plane["num_features"],
+        "num_matches": plane["num_matches"],
+        "num_inliers": plane["num_inliers"],
+        "inlier_ratio": plane["inlier_ratio"],
+        "plane_rms_mm": plane["plane_rms_mm"],
+        "epipolar_rms_px": plane["epipolar_rms_px"],
+        "inlier_depth_range_mm": plane["inlier_depth_range_mm"],
+        "baseline_mm": plane["baseline_mm"],
+    }
+
+
+def _right_config(config: PoseConfig) -> PoseConfig:
+    """Return a PoseConfig whose primary intrinsics are the right camera's.
+
+    estimate_pose_from_left_points always reads the *primary* fx/fy/cx/cy/dist of
+    the config it is given, so feeding it this config makes it solve PnP in the
+    right camera optical frame.
+    """
+    return replace(
+        config,
+        focal_px=_config_fx_right(config),
+        fx=_config_fx_right(config),
+        fy=_config_fy_right(config),
+        cx=_config_cx_right(config),
+        cy=_config_cy_right(config),
+        dist_coeffs=tuple(_config_dist_right(config)),
+    )
+
+
+def _intrinsics_assumption_right(config: PoseConfig) -> dict[str, Any]:
+    return {
+        "fx": _config_fx_right(config),
+        "fy": _config_fy_right(config),
+        "cx": _config_cx_right(config),
+        "cy": _config_cy_right(config),
+        "dist_coeffs": _config_dist_right(config),
+        "mirrors_left": config.fx_right is None
+        and config.fy_right is None
+        and config.cx_right is None
+        and config.cy_right is None
+        and config.dist_coeffs_right is None,
     }
 
 
@@ -1158,6 +1446,17 @@ def _build_config(args: argparse.Namespace) -> PoseConfig:
         cx=args.cx,
         cy=args.cy,
         dist_coeffs=parse_dist_coeffs(getattr(args, "dist_coeffs", None)),
+        fx_right=getattr(args, "fx_right", None),
+        fy_right=getattr(args, "fy_right", None),
+        cx_right=getattr(args, "cx_right", None),
+        cy_right=getattr(args, "cy_right", None),
+        dist_coeffs_right=(
+            parse_dist_coeffs(args.dist_coeffs_right)
+            if getattr(args, "dist_coeffs_right", None) is not None
+            else None
+        ),
+        stereo_R=parse_float_list(getattr(args, "stereo_r", None), expected=9),
+        stereo_T=parse_float_list(getattr(args, "stereo_t", None), expected=3),
         left_roi=args.left_roi,
         right_roi=args.right_roi,
         min_red_fraction=args.min_red_fraction,
@@ -1231,6 +1530,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--dist-coeffs",
         default=None,
         help="left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3; defaults to all zeros",
+    )
+    parser.add_argument("--fx-right", type=float, help="right camera fx in pixels; defaults to the left fx")
+    parser.add_argument("--fy-right", type=float, help="right camera fy in pixels; defaults to the left fy")
+    parser.add_argument("--cx-right", type=float, help="right camera cx in pixels; defaults to the left cx")
+    parser.add_argument("--cy-right", type=float, help="right camera cy in pixels; defaults to the left cy")
+    parser.add_argument(
+        "--dist-coeffs-right",
+        default=None,
+        help="right camera distortion as comma-separated coeffs k1,k2,p1,p2,k3; defaults to the left distortion",
+    )
+    parser.add_argument(
+        "--stereo-r",
+        default=None,
+        help="stereo rotation, 9 comma-separated values (row-major 3x3); enables stereo triangulation",
+    )
+    parser.add_argument(
+        "--stereo-t",
+        default=None,
+        help="stereo translation, 3 comma-separated values in mm (cv2.stereoCalibrate convention)",
     )
     parser.add_argument("--left-roi", type=parse_roi, default=parse_roi("190,215,500,420"))
     parser.add_argument("--right-roi", type=parse_roi, default=parse_roi("170,225,385,400"))
@@ -1589,10 +1907,11 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         box_head_fraction_from_head=args.box_head_fraction_from_head,
         camera_to_vertical_deg=args.camera_to_vertical_deg,
     )
+    right_config = _right_config(config)
     right_by_orientation = (
         _solve_view_hypotheses(
             right_points,
-            config,
+            right_config,
             "right",
             box_head_fraction_from_head=args.box_head_fraction_from_head,
             camera_to_vertical_deg=args.camera_to_vertical_deg,
@@ -1699,6 +2018,48 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                     "right/left points may not correspond, or lens-surface baseline may differ from optical-center baseline"
                 )
 
+    _stereo_block_result = _stereo_pose_block(left_points, right_points, config)
+    if _stereo_block_result is not None:
+        mono_center = selected_left["center_xyz_mm"]
+        stereo_center = _stereo_block_result["center_xyz_mm"]
+        center_delta = math.sqrt(sum((float(a) - float(b)) ** 2 for a, b in zip(mono_center, stereo_center)))
+        _stereo_block_result["vs_left_mono"] = {
+            "center_delta_mm": round(center_delta, 1),
+            "depth_delta_mm": round(
+                abs(float(_stereo_block_result["depth_mm"]) - float(selected_left["optical_axis_depth_mm"])), 1
+            ),
+            "range_delta_mm": round(
+                abs(
+                    float(_stereo_block_result["range_from_left_camera_mm"])
+                    - float(selected_left["range_from_left_camera_mm"])
+                ),
+                1,
+            ),
+        }
+
+    _stereo_plane_block_result = _stereo_plane_block(left_image, right_image, left_points, config)
+    if _stereo_plane_block_result is not None:
+        plane_center = _stereo_plane_block_result["center_xyz_mm"]
+        mono_center = selected_left["center_xyz_mm"]
+        _stereo_plane_block_result["vs_left_mono"] = {
+            "center_delta_mm": round(
+                math.sqrt(sum((float(a) - float(b)) ** 2 for a, b in zip(mono_center, plane_center))), 1
+            ),
+            "depth_delta_mm": round(
+                abs(float(_stereo_plane_block_result["depth_mm"]) - float(selected_left["optical_axis_depth_mm"])), 1
+            ),
+        }
+        if _stereo_block_result is not None:
+            corner_center = _stereo_block_result["center_xyz_mm"]
+            _stereo_plane_block_result["vs_stereo_corner"] = {
+                "center_delta_mm": round(
+                    math.sqrt(sum((float(a) - float(b)) ** 2 for a, b in zip(corner_center, plane_center))), 1
+                ),
+                "depth_delta_mm": round(
+                    abs(float(_stereo_plane_block_result["depth_mm"]) - float(_stereo_block_result["depth_mm"])), 1
+                ),
+            }
+
     robot_alignment_hypotheses = _build_robot_alignment_hypotheses(
         left_by_orientation,
         right_by_orientation,
@@ -1760,6 +2121,10 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "box_head_one_third_above_xyz_mm": box_head_one_third_above["point_xyz_mm"],
         "box_head_one_third_above": box_head_one_third_above,
         "intrinsics_assumption": _intrinsics_assumption(config),
+        "intrinsics_assumption_right": _intrinsics_assumption_right(config),
+        "right": _right_pose_block(selected_right, selected_orientation, config) if selected_right is not None else None,
+        "stereo": _stereo_block_result,
+        "stereo_plane": _stereo_plane_block_result,
         "stereo_baseline_mm": round(float(config.stereo_baseline_mm), 1),
         "point_adjustments": point_adjustments,
         "roi": (
