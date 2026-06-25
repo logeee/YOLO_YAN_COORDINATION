@@ -71,6 +71,7 @@ class PoseConfig:
     fy: float | None = None
     cx: float = 320.0
     cy: float = 240.0
+    dist_coeffs: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0)
     left_roi: tuple[int, int, int, int] | None = (190, 215, 500, 420)
     right_roi: tuple[int, int, int, int] | None = (170, 225, 385, 400)
     min_red_fraction: float = 0.0
@@ -88,13 +89,42 @@ def _config_fy(config: PoseConfig) -> float:
     return float(config.fy if config.fy is not None else config.focal_px)
 
 
-def _intrinsics_assumption(config: PoseConfig) -> dict[str, float]:
+def _config_dist(config: PoseConfig) -> list[float]:
+    return [float(value) for value in config.dist_coeffs]
+
+
+def parse_dist_coeffs(value: Any) -> tuple[float, ...]:
+    """Parse OpenCV distortion coefficients from a list/tuple or comma string.
+
+    Accepts 4, 5, 8, 12 or 14 numbers (padding the 4-number case to 5 with k3=0).
+    Returns a tuple of floats; an empty/None input maps to all zeros.
+    """
+    if value is None:
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+    if isinstance(value, str):
+        parts = [item for item in value.replace(",", " ").split() if item]
+        numbers = [float(item) for item in parts]
+    elif isinstance(value, (list, tuple)):
+        numbers = [float(item) for item in value]
+    else:
+        raise ValueError("dist_coeffs must be a list/tuple or comma-separated string")
+    if not numbers:
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+    if len(numbers) == 4:
+        numbers.append(0.0)
+    if len(numbers) not in (5, 8, 12, 14):
+        raise ValueError("dist_coeffs must contain 4, 5, 8, 12 or 14 numbers")
+    return tuple(numbers)
+
+
+def _intrinsics_assumption(config: PoseConfig) -> dict[str, Any]:
     return {
         "focal_px": float(config.focal_px),
         "fx": _config_fx(config),
         "fy": _config_fy(config),
         "cx": float(config.cx),
         "cy": float(config.cy),
+        "dist_coeffs": _config_dist(config),
     }
 
 
@@ -704,7 +734,16 @@ def estimate_pose_from_left_points(
 
     points = normalize_points(points_px, points_order)
     width_m, height_m = _orientation_size(config, selected_orientation)
-    depth = solve_depth(points, width_m, height_m, _config_fx(config), config.cx, config.cy, fy_px=_config_fy(config))
+    depth = solve_depth(
+        points,
+        width_m,
+        height_m,
+        _config_fx(config),
+        config.cx,
+        config.cy,
+        fy_px=_config_fy(config),
+        dist_coeffs=_config_dist(config),
+    )
     top_plane_up_unit_xyz = _top_plane_up_unit_xyz(depth["rotation_matrix"])
     box_head_point = _box_head_one_third_point(
         depth,
@@ -1118,6 +1157,7 @@ def _build_config(args: argparse.Namespace) -> PoseConfig:
         fy=args.fy,
         cx=args.cx,
         cy=args.cy,
+        dist_coeffs=parse_dist_coeffs(getattr(args, "dist_coeffs", None)),
         left_roi=args.left_roi,
         right_roi=args.right_roi,
         min_red_fraction=args.min_red_fraction,
@@ -1187,6 +1227,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fy", type=float, help="left camera fy in pixels")
     parser.add_argument("--cx", type=float, default=320.0)
     parser.add_argument("--cy", type=float, default=240.0)
+    parser.add_argument(
+        "--dist-coeffs",
+        default=None,
+        help="left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3; defaults to all zeros",
+    )
     parser.add_argument("--left-roi", type=parse_roi, default=parse_roi("190,215,500,420"))
     parser.add_argument("--right-roi", type=parse_roi, default=parse_roi("170,225,385,400"))
     parser.add_argument("--min-red-fraction", type=float, default=0.0)

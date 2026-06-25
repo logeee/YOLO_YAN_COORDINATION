@@ -404,12 +404,16 @@ def solve_depth(
     cx: float,
     cy: float,
     fy_px: float | None = None,
+    dist_coeffs: Any | None = None,
 ) -> dict[str, Any]:
     obj = object_points(width_m, height_m)
     fx_px = float(focal_px)
     fy_px = float(fy_px if fy_px is not None else focal_px)
     k = np.asarray([[fx_px, 0.0, cx], [0.0, fy_px, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
-    dist = np.zeros((5, 1), dtype=np.float64)
+    if dist_coeffs is None:
+        dist = np.zeros((5, 1), dtype=np.float64)
+    else:
+        dist = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1, 1)
     ok, rvec, tvec = cv2.solvePnP(obj, points.astype(np.float64), k, dist, flags=cv2.SOLVEPNP_IPPE)
     if not ok:
         raise RuntimeError("solvePnP failed")
