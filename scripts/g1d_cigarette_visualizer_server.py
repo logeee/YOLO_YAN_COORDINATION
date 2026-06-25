@@ -340,6 +340,26 @@ def _optical_center_right_m(payload: dict[str, Any]):
     return np.array([float(p_mm[0]), float(p_mm[1]), float(p_mm[2])], dtype=float) / 1000.0
 
 
+def _stereo_center_m(payload: dict[str, Any]):
+    """Stereo-triangulation center point (meters, left_camera_optical) from a payload.
+
+    The YOLO service returns ``payload["stereo"]`` with ``available`` and its own
+    ``center_xyz_mm`` (mm, left_camera_optical), computed by stereo triangulation
+    rather than mono-PnP. None unless stereo is available with a valid center.
+    """
+    if not isinstance(payload, dict):
+        return None
+    stereo = payload.get("stereo")
+    if not isinstance(stereo, dict) or not stereo.get("available"):
+        return None
+    p_mm = stereo.get("center_xyz_mm")
+    if not p_mm or len(p_mm) < 3:
+        return None
+    import numpy as np
+
+    return np.array([float(p_mm[0]), float(p_mm[1]), float(p_mm[2])], dtype=float) / 1000.0
+
+
 def _to_base(T, p_opt):
     import numpy as np
 
@@ -364,6 +384,8 @@ def _inject_base_coords(
     Plus the RIGHT eye (right_camera_optical -> base via right hand-eye):
       * c_right_new_m      : RIGHT NEW intrinsics + RIGHT hand-eye           (右眼 新内+新外)
       * c_right_new_dist_m : RIGHT NEW intrinsics + distortion + RIGHT hand-eye (右眼 新内+新外+畸变)
+    Plus STEREO triangulation (left_camera_optical -> base via LEFT hand-eye):
+      * c_stereo_m         : stereo-triangulation center + LEFT hand-eye    (双目深度)
     ``pose`` carries the NEW-intrinsics payload (dist=0); ``payload_old`` the OLD
     one (dist=0); ``payload_new_dist`` the NEW intrinsics WITH distortion coeffs.
     The right-eye no-dist point rides on ``pose`` (right dist=0); the right-eye
@@ -387,6 +409,7 @@ def _inject_base_coords(
         p_new_dist = _optical_center_m(payload_new_dist) if payload_new_dist is not None else None
         p_right = _optical_center_right_m(pose)
         p_right_dist = _optical_center_right_m(payload_new_dist) if payload_new_dist is not None else None
+        p_stereo = _stereo_center_m(pose)
 
         out: dict[str, Any] = {"ok": True, "intrinsics_old": OLD_INTRINSICS, "intrinsics_new": NEW_INTRINSICS,
                                "intrinsics_new_right": NEW_INTRINSICS_RIGHT,
@@ -406,7 +429,7 @@ def _inject_base_coords(
             out["cam_right_ex_m"] = [round(float(v), 4) for v in T_right[:3, 3]]
 
         c_old_old = c_old_new = c_new_new = c_new_old = c_new_new_dist = None
-        c_right_new = c_right_new_dist = None
+        c_right_new = c_right_new_dist = c_stereo = None
         if p_old is not None and T_urdf is not None:
             c_old_old = _to_base(T_urdf, p_old)
             out["c_old_old_m"] = [round(float(v), 4) for v in c_old_old]
@@ -431,6 +454,14 @@ def _inject_base_coords(
         if p_right_dist is not None and T_right is not None:
             c_right_new_dist = _to_base(T_right, p_right_dist)
             out["c_right_new_dist_m"] = [round(float(v), 4) for v in c_right_new_dist]
+        # ⑧ 双目深度: stereo-triangulation center (left optical) + LEFT hand-eye.
+        if p_stereo is not None and T_he is not None:
+            c_stereo = _to_base(T_he, p_stereo)
+            out["c_stereo_m"] = [round(float(v), 4) for v in c_stereo]
+            stereo = pose.get("stereo") if isinstance(pose, dict) else None
+            if isinstance(stereo, dict):
+                out["stereo_reproj_px"] = stereo.get("stereo_reprojection_error_px")
+                out["stereo_baseline_mm"] = stereo.get("baseline_mm")
 
         if c_old_old is not None and c_old_new is not None:
             out["delta_ex_mm"] = round(float(np.linalg.norm(c_old_old - c_old_new)) * 1000.0, 1)
@@ -440,6 +471,9 @@ def _inject_base_coords(
             out["delta_dist_mm"] = round(float(np.linalg.norm(c_new_new - c_new_new_dist)) * 1000.0, 1)
         if c_right_new is not None and c_right_new_dist is not None:
             out["delta_right_dist_mm"] = round(float(np.linalg.norm(c_right_new - c_right_new_dist)) * 1000.0, 1)
+        # 双目 vs ③ 左眼单目(新内+新外) 的 base 系差异。
+        if c_stereo is not None and c_new_new is not None:
+            out["delta_stereo_mm"] = round(float(np.linalg.norm(c_stereo - c_new_new)) * 1000.0, 1)
         pose["base_coords"] = out
     except (Exception, SystemExit) as exc:
         pose["base_coords"] = {"ok": False, "error": str(exc)}

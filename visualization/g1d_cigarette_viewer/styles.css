@@ -396,6 +396,10 @@ body.compact-mode .legend i {
   color: #ff8c42;
 }
 
+.method-check.method-stereo span {
+  color: #00e0c0;
+}
+
 .pick-panel {
   display: flex;
   flex-direction: column;
