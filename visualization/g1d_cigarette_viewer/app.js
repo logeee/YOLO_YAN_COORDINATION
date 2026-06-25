@@ -53,11 +53,13 @@ const dom = {
   baseCoordRightNew: document.querySelector("#baseCoordRightNew"),
   baseCoordRightNewDist: document.querySelector("#baseCoordRightNewDist"),
   baseCoordStereo: document.querySelector("#baseCoordStereo"),
+  baseCoordStereoPlane: document.querySelector("#baseCoordStereoPlane"),
   baseCoordDeltaEx: document.querySelector("#baseCoordDeltaEx"),
   baseCoordDeltaIn: document.querySelector("#baseCoordDeltaIn"),
   baseCoordDeltaDist: document.querySelector("#baseCoordDeltaDist"),
   baseCoordDeltaRightDist: document.querySelector("#baseCoordDeltaRightDist"),
   baseCoordDeltaStereo: document.querySelector("#baseCoordDeltaStereo"),
+  baseCoordDeltaStereoPlane: document.querySelector("#baseCoordDeltaStereoPlane"),
   baseCoordRefresh: document.querySelector("#baseCoordRefresh"),
   baseCoordStatus: document.querySelector("#baseCoordStatus"),
   selectAllMethods: document.querySelector("#selectAllMethods"),
@@ -76,6 +78,7 @@ const dom = {
   showRightNew: document.querySelector("#showRightNew"),
   showRightNewDist: document.querySelector("#showRightNewDist"),
   showStereo: document.querySelector("#showStereo"),
+  showStereoPlane: document.querySelector("#showStereoPlane"),
   centerOnly: document.querySelector("#centerOnly"),
   showXPlane: document.querySelector("#showXPlane"),
   xPlaneMm: document.querySelector("#xPlaneMm"),
@@ -210,7 +213,7 @@ function bindEvents() {
   if (dom.baseCoordRefresh) {
     dom.baseCoordRefresh.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
   }
-  const methodToggles = () => [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.showStereo];
+  const methodToggles = () => [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.showStereo, dom.showStereoPlane];
   const setAllMethods = (checked) => {
     for (const toggle of methodToggles()) {
       if (toggle) toggle.checked = checked;
@@ -238,7 +241,7 @@ function bindEvents() {
   for (const el of [dom.xPlaneMm, dom.yPlaneMm, dom.zPlaneMm]) {
     if (el) el.addEventListener("input", () => updateBasePlanes());
   }
-  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.showStereo, dom.centerOnly]) {
+  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.showStereo, dom.showStereoPlane, dom.centerOnly]) {
     if (!toggle) continue;
     toggle.addEventListener("change", () => {
       updateBaseCoordVisibility();
@@ -388,6 +391,7 @@ const BOX_EDGE_NEWDIST = 0xff6fd8; // ⑤ 新内参 + 新外参 + 畸变校正(�
 const BOX_EDGE_RIGHT = 0x9d7bff;     // ⑥ 右眼 新内参 + 新外参(紫)
 const BOX_EDGE_RIGHTDIST = 0xff8c42; // ⑦ 右眼 新内参 + 新外参 + 畸变校正(橙红)
 const BOX_EDGE_STEREO = 0x00e0c0;    // ⑧ 双目深度(青绿)
+const BOX_EDGE_STEREOPLANE = 0xffd24a; // ⑨ 双目深度+mask内特征匹配(金黄)
 
 function renderPose(pose, { frame = false } = {}) {
   cigaretteGroup.clear();
@@ -406,6 +410,7 @@ function renderPose(pose, { frame = false } = {}) {
   const wantRightNew = dom.showRightNew ? dom.showRightNew.checked : true; // ⑥ 右眼 新内+新外
   const wantRightNewDist = dom.showRightNewDist ? dom.showRightNewDist.checked : true; // ⑦ 右眼 新内+新外+畸变
   const wantStereo = dom.showStereo ? dom.showStereo.checked : true; // ⑧ 双目深度
+  const wantStereoPlane = dom.showStereoPlane ? dom.showStereoPlane.checked : true; // ⑨ 双目深度+mask内特征匹配
   const centerOnly = dom.centerOnly ? dom.centerOnly.checked : false;
 
   const drawOldOld = wantOldOld && bc && Array.isArray(bc.c_old_old_m);
@@ -416,8 +421,9 @@ function renderPose(pose, { frame = false } = {}) {
   const drawRightNew = wantRightNew && bc && Array.isArray(bc.c_right_new_m);
   const drawRightNewDist = wantRightNewDist && bc && Array.isArray(bc.c_right_new_dist_m);
   const drawStereo = wantStereo && bc && Array.isArray(bc.c_stereo_m);
+  const drawStereoPlane = wantStereoPlane && bc && Array.isArray(bc.c_stereo_plane_m);
 
-  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist && !drawRightNew && !drawRightNewDist && !drawStereo) {
+  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist && !drawRightNew && !drawRightNewDist && !drawStereo && !drawStereoPlane) {
     setStatus(bc ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
     if (dom.metricDelta) dom.metricDelta.textContent = "-";
     writeSceneState();
@@ -451,6 +457,7 @@ function renderPose(pose, { frame = false } = {}) {
   let cRightNew = null;
   let cRightNewDist = null;
   let cStereo = null;
+  let cStereoPlane = null;
   let focus = null;
 
   // ① 老内参 + 老外参: OLD-intrinsics point + nominal URDF.
@@ -492,6 +499,11 @@ function renderPose(pose, { frame = false } = {}) {
   if (drawStereo) {
     cStereo = drawMethod(bc.c_stereo_m, yawQuat, BOX_EDGE_STEREO, "⑧双目深度", "⑧", bc.cam_new_ex_m);
     if (!focus) focus = cStereo;
+  }
+  // ⑨ 双目深度+mask内特征匹配: feature_epipolar_ransac center (left optical) + left hand-eye.
+  if (drawStereoPlane) {
+    cStereoPlane = drawMethod(bc.c_stereo_plane_m, yawQuat, BOX_EDGE_STEREOPLANE, "⑨双目+mask特征", "⑨", bc.cam_new_ex_m);
+    if (!focus) focus = cStereoPlane;
   }
 
   // metricDelta = 外参差(①→②, 同一 OLD 内参点, 仅外参不同)。
@@ -567,11 +579,13 @@ function updateBaseCoordVisibility() {
   setRow(dom.baseCoordRightNew, ck(dom.showRightNew));
   setRow(dom.baseCoordRightNewDist, ck(dom.showRightNewDist));
   setRow(dom.baseCoordStereo, ck(dom.showStereo));
+  setRow(dom.baseCoordStereoPlane, ck(dom.showStereoPlane));
   setRow(dom.baseCoordDeltaEx, ck(dom.showOldOld) && ck(dom.showOldNew));
   setRow(dom.baseCoordDeltaIn, ck(dom.showOldNew) && ck(dom.showNewNew));
   setRow(dom.baseCoordDeltaDist, ck(dom.showNewNew) && ck(dom.showNewNewDist));
   setRow(dom.baseCoordDeltaRightDist, ck(dom.showRightNew) && ck(dom.showRightNewDist));
   setRow(dom.baseCoordDeltaStereo, ck(dom.showStereo) && ck(dom.showNewNew));
+  setRow(dom.baseCoordDeltaStereoPlane, ck(dom.showStereoPlane) && ck(dom.showNewNew));
 }
 
 function updateBaseCoordMetrics(pose) {
@@ -586,6 +600,7 @@ function updateBaseCoordMetrics(pose) {
   if (dom.baseCoordRightNew) dom.baseCoordRightNew.textContent = bc ? formatBaseCoordMm(bc.c_right_new_m) : "-";
   if (dom.baseCoordRightNewDist) dom.baseCoordRightNewDist.textContent = bc ? formatBaseCoordMm(bc.c_right_new_dist_m) : "-";
   if (dom.baseCoordStereo) dom.baseCoordStereo.textContent = bc ? formatBaseCoordMm(bc.c_stereo_m) : "-";
+  if (dom.baseCoordStereoPlane) dom.baseCoordStereoPlane.textContent = bc ? formatBaseCoordMm(bc.c_stereo_plane_m) : "-";
   if (dom.baseCoordDeltaEx) {
     dom.baseCoordDeltaEx.textContent = bc && bc.delta_ex_mm != null ? `${Math.round(bc.delta_ex_mm)} mm` : "-";
   }
@@ -600,6 +615,9 @@ function updateBaseCoordMetrics(pose) {
   }
   if (dom.baseCoordDeltaStereo) {
     dom.baseCoordDeltaStereo.textContent = bc && bc.delta_stereo_mm != null ? `${Math.round(bc.delta_stereo_mm)} mm` : "-";
+  }
+  if (dom.baseCoordDeltaStereoPlane) {
+    dom.baseCoordDeltaStereoPlane.textContent = bc && bc.delta_stereo_plane_mm != null ? `${Math.round(bc.delta_stereo_plane_mm)} mm` : "-";
   }
 
   if (dom.baseCoordStatus) {

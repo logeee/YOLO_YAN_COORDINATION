@@ -400,6 +400,10 @@ body.compact-mode .legend i {
   color: #00e0c0;
 }
 
+.method-check.method-stereoplane span {
+  color: #ffd24a;
+}
+
 .pick-panel {
   display: flex;
   flex-direction: column;

@@ -86,6 +86,10 @@
             <input id="showStereo" type="checkbox" checked />
             <span>⑧ 双目深度 (双目三角测量)</span>
           </label>
+          <label class="method-check method-stereoplane">
+            <input id="showStereoPlane" type="checkbox" checked />
+            <span>⑨ 双目深度 + mask内特征匹配 (特征极线RANSAC)</span>
+          </label>
           <label class="method-check">
             <input id="centerOnly" type="checkbox" />
             <span>只显示中心点（隐藏盒子外形）</span>
@@ -136,11 +140,13 @@
             <div><dt>⑥ 右眼 新内参 + 新外参</dt><dd id="baseCoordRightNew">-</dd></div>
             <div><dt>⑦ 右眼 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordRightNewDist">-</dd></div>
             <div><dt>⑧ 双目深度 (双目三角测量)</dt><dd id="baseCoordStereo">-</dd></div>
+            <div><dt>⑨ 双目深度 + mask内特征匹配</dt><dd id="baseCoordStereoPlane">-</dd></div>
             <div><dt>外参差 (①→②)</dt><dd id="baseCoordDeltaEx">-</dd></div>
             <div><dt>内参差 (②→③)</dt><dd id="baseCoordDeltaIn">-</dd></div>
             <div><dt>左眼畸变差 (③→⑤)</dt><dd id="baseCoordDeltaDist">-</dd></div>
             <div><dt>右眼畸变差 (⑥→⑦)</dt><dd id="baseCoordDeltaRightDist">-</dd></div>
             <div><dt>双目vs单目差 (③→⑧)</dt><dd id="baseCoordDeltaStereo">-</dd></div>
+            <div><dt>双目特征vs单目差 (③→⑨)</dt><dd id="baseCoordDeltaStereoPlane">-</dd></div>
           </dl>
           <div class="button-row data-row">
             <button id="baseCoordRefresh" class="primary-action" type="button">获取基座坐标</button>
