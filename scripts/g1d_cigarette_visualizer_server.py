@@ -55,6 +55,13 @@ OLD_INTRINSICS: dict[str, float] = {"fx": 260.0, "fy": 260.0, "cx": 320.0, "cy":
 # when the file is missing; they mirror the previous 20260615172934 calibration.
 NEW_INTRINSICS: dict[str, float] = {"fx": 271.24, "fy": 271.22, "cx": 323.97, "cy": 249.90}
 
+# NEW distortion coefficients (k1,k2,p1,p2,k3), loaded from the same calibration
+# file as NEW_INTRINSICS. ONLY the ⑥ 新内参+新外参+畸变校正 combo sends these to the
+# YOLO service; every other combo sends ZERO_DIST so the service's mono-PnP does
+# NOT undistort, keeping the intrinsics/extrinsics-only comparison clean.
+NEW_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
+ZERO_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
+
 # Default calibration files on this machine. NEW intrinsics (grid) come from the
 # JSON; our_method intrinsics come from the matching OpenCV stereo YAML; NEW
 # extrinsics (hand-eye) come from the handeye run that referenced that YAML.
@@ -91,6 +98,39 @@ def _load_left_intrinsics_file(path: str | Path) -> dict[str, float]:
     K = data["left_camera"]["camera_matrix"]
     return {"fx": float(K[0][0]), "fy": float(K[1][1]),
             "cx": float(K[0][2]), "cy": float(K[1][2])}
+
+
+def _load_left_dist_coeffs_file(path: str | Path) -> list[float]:
+    """Read left-camera distortion coeffs ``[k1, k2, p1, p2, k3]`` from calibration.
+
+    Supports ``calibration_result.json`` (``left_camera.dist_coeffs``, stored as a
+    nested ``[[...]]``) with the stdlib, and the OpenCV ``stereo_calibration.yaml``
+    (``left_distortion_coefficients``) via ``cv2.FileStorage``. Always returns 5
+    floats so it maps directly onto the YOLO service's ``k1,k2,p1,p2,k3`` param.
+    """
+    path = Path(path)
+    if path.suffix.lower() in (".yaml", ".yml"):
+        import cv2
+
+        fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
+        try:
+            D = None
+            for key in ("left_distortion_coefficients", "left_dist_coeffs", "left_distortion"):
+                node = fs.getNode(key)
+                if node is not None and not node.empty():
+                    D = node.mat()
+                    break
+        finally:
+            fs.release()
+        if D is None:
+            raise ValueError(f"left distortion coeffs not found in {path}")
+        flat = [float(v) for row in D.tolist() for v in (row if isinstance(row, list) else [row])]
+    else:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        D = data["left_camera"]["dist_coeffs"]
+        flat = [float(v) for v in (D[0] if (isinstance(D, list) and D and isinstance(D[0], list)) else D)]
+    out = (flat + [0.0, 0.0, 0.0, 0.0, 0.0])[:5]
+    return out
 
 
 def _urdf_nominal_optical_to_base(urdf_path: Path, camera_child: str = "d435_link",
@@ -248,17 +288,25 @@ def _to_base(T, p_opt):
     return (T @ np.array([p_opt[0], p_opt[1], p_opt[2], 1.0], dtype=float))[:3]
 
 
-def _inject_base_coords(pose: dict[str, Any], payload_old: dict[str, Any] | None = None) -> None:
+def _inject_base_coords(
+    pose: dict[str, Any],
+    payload_old: dict[str, Any] | None = None,
+    payload_new_dist: dict[str, Any] | None = None,
+) -> None:
     """Base-frame coordinates for the intrinsics x extrinsics comparison.
 
     Only the YOLO 2D detection is held fixed; we vary (a) the YOLO mono-PnP
-    intrinsics -> the optical 3D point, and (b) the eye->base transform:
-      * c_old_old_m : OLD intrinsics point + nominal URDF extrinsics  (老内参+老外参)
-      * c_old_new_m : OLD intrinsics point + OUR hand-eye extrinsics   (老内参+新外参)
-      * c_new_new_m : NEW intrinsics point + OUR hand-eye extrinsics   (新内参+新外参)
-      * c_new_old_m : NEW intrinsics point + nominal URDF extrinsics   (新内参+老外参)
-    ``pose`` carries the NEW-intrinsics payload; ``payload_old`` the OLD one.
-    delta_ex_mm = ①->② (extrinsic effect); delta_in_mm = ②->③ (intrinsic effect).
+    intrinsics -> the optical 3D point, (b) the eye->base transform, and (c)
+    whether the service undistorts with our distortion coeffs:
+      * c_old_old_m      : OLD intrinsics point + nominal URDF extrinsics  (老内参+老外参)
+      * c_old_new_m      : OLD intrinsics point + OUR hand-eye extrinsics   (老内参+新外参)
+      * c_new_new_m      : NEW intrinsics point + OUR hand-eye extrinsics   (新内参+新外参)
+      * c_new_old_m      : NEW intrinsics point + nominal URDF extrinsics   (新内参+老外参)
+      * c_new_new_dist_m : NEW intrinsics + distortion + OUR hand-eye       (新内参+新外参+畸变校正)
+    ``pose`` carries the NEW-intrinsics payload (dist=0); ``payload_old`` the OLD
+    one (dist=0); ``payload_new_dist`` the NEW intrinsics WITH distortion coeffs.
+    delta_ex_mm = ①->② (extrinsic effect); delta_in_mm = ②->③ (intrinsic effect);
+    delta_dist_mm = ③->⑥ (distortion-correction effect, same intrinsics+extrinsics).
     """
     if not isinstance(pose, dict):
         return
@@ -271,18 +319,22 @@ def _inject_base_coords(pose: dict[str, Any], payload_old: dict[str, Any] | None
 
         p_new = _optical_center_m(pose)
         p_old = _optical_center_m(payload_old) if payload_old is not None else None
+        p_new_dist = _optical_center_m(payload_new_dist) if payload_new_dist is not None else None
 
-        out: dict[str, Any] = {"ok": True, "intrinsics_old": OLD_INTRINSICS, "intrinsics_new": NEW_INTRINSICS}
+        out: dict[str, Any] = {"ok": True, "intrinsics_old": OLD_INTRINSICS, "intrinsics_new": NEW_INTRINSICS,
+                               "dist_coeffs_new": [round(float(v), 6) for v in NEW_DIST]}
         if p_old is not None:
             out["p_old_optical_mm"] = [round(float(v) * 1000.0, 1) for v in p_old]
         if p_new is not None:
             out["p_new_optical_mm"] = [round(float(v) * 1000.0, 1) for v in p_new]
+        if p_new_dist is not None:
+            out["p_new_dist_optical_mm"] = [round(float(v) * 1000.0, 1) for v in p_new_dist]
         if T_urdf is not None:
             out["cam_old_ex_m"] = [round(float(v), 4) for v in T_urdf[:3, 3]]
         if T_he is not None:
             out["cam_new_ex_m"] = [round(float(v), 4) for v in T_he[:3, 3]]
 
-        c_old_old = c_old_new = c_new_new = c_new_old = None
+        c_old_old = c_old_new = c_new_new = c_new_old = c_new_new_dist = None
         if p_old is not None and T_urdf is not None:
             c_old_old = _to_base(T_urdf, p_old)
             out["c_old_old_m"] = [round(float(v), 4) for v in c_old_old]
@@ -295,11 +347,17 @@ def _inject_base_coords(pose: dict[str, Any], payload_old: dict[str, Any] | None
         if p_new is not None and T_urdf is not None:
             c_new_old = _to_base(T_urdf, p_new)
             out["c_new_old_m"] = [round(float(v), 4) for v in c_new_old]
+        # ⑥ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
+        if p_new_dist is not None and T_he is not None:
+            c_new_new_dist = _to_base(T_he, p_new_dist)
+            out["c_new_new_dist_m"] = [round(float(v), 4) for v in c_new_new_dist]
 
         if c_old_old is not None and c_old_new is not None:
             out["delta_ex_mm"] = round(float(np.linalg.norm(c_old_old - c_old_new)) * 1000.0, 1)
         if c_old_new is not None and c_new_new is not None:
             out["delta_in_mm"] = round(float(np.linalg.norm(c_old_new - c_new_new)) * 1000.0, 1)
+        if c_new_new is not None and c_new_new_dist is not None:
+            out["delta_dist_mm"] = round(float(np.linalg.norm(c_new_new - c_new_new_dist)) * 1000.0, 1)
         pose["base_coords"] = out
     except (Exception, SystemExit) as exc:
         pose["base_coords"] = {"ok": False, "error": str(exc)}
@@ -1054,19 +1112,31 @@ def make_handler(
                 label = query.get("label", [""])[-1]
                 # Our own PnP (4th box) is injected ONLY when the frontend opts in.
                 use_our = query.get("our", ["0"])[-1].strip().lower() in ("1", "true", "yes", "on")
-                # Fetch YOLO twice: NEW intrinsics (primary pose) + OLD intrinsics,
-                # since the service's mono-PnP 3D point depends on fx/fy/cx/cy.
+                # Fetch YOLO three times, since the service's mono-PnP 3D point
+                # depends on fx/fy/cx/cy AND the distortion coeffs:
+                #   url_new      NEW intrinsics, dist=0  -> ③ primary pose
+                #   url_old      OLD intrinsics, dist=0  -> ① / ②
+                #   url_new_dist NEW intrinsics + NEW dist coeffs -> ⑥ (undistorted)
+                # Non-corrected combos send dist_coeffs=0 explicitly so the service
+                # does NOT undistort, keeping the intrinsics-only comparison clean.
                 intr_new = {k: str(v) for k, v in NEW_INTRINSICS.items()}
                 intr_old = {k: str(v) for k, v in OLD_INTRINSICS.items()}
-                url_new = _merge_query(source_url, {"label": label, **intr_new})
-                url_old = _merge_query(source_url, {"label": label, **intr_old})
+                zero_dist = ",".join(str(v) for v in ZERO_DIST)
+                new_dist = ",".join(str(v) for v in NEW_DIST)
+                url_new = _merge_query(source_url, {"label": label, **intr_new, "dist_coeffs": zero_dist})
+                url_old = _merge_query(source_url, {"label": label, **intr_old, "dist_coeffs": zero_dist})
+                url_new_dist = _merge_query(source_url, {"label": label, **intr_new, "dist_coeffs": new_dist})
                 try:
                     payload = _fetch_json(url_new, timeout_sec)
                     try:
                         payload_old = _fetch_json(url_old, timeout_sec)
                     except Exception:
                         payload_old = None
-                    _inject_base_coords(payload, payload_old)
+                    try:
+                        payload_new_dist = _fetch_json(url_new_dist, timeout_sec)
+                    except Exception:
+                        payload_new_dist = None
+                    _inject_base_coords(payload, payload_old, payload_new_dist)
                     if use_our:
                         _inject_our_method(payload)
                     _json_response(self, 200 if payload.get("ok", True) else 502, {"ok": True, "url": url_new, "pose": payload})
@@ -1141,13 +1211,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global NEW_INTRINSICS
+    global NEW_INTRINSICS, NEW_DIST
     args = build_arg_parser().parse_args()
     if not VIEWER_DIR.exists():
         raise FileNotFoundError(f"viewer directory not found: {VIEWER_DIR}")
 
     # NEW intrinsics for the grid (?fx&fy&cx&cy) are read from a calibration file;
-    # fall back to the hard-coded NEW_INTRINSICS if the file can't be read.
+    # fall back to the hard-coded NEW_INTRINSICS if the file can't be read. The
+    # matching distortion coeffs (only the ⑥ combo uses them) come from the same
+    # file; missing coeffs fall back to zeros (= no undistortion).
     new_intr_file = args.new_intrinsics_file or DEFAULT_NEW_INTRINSICS_FILE
     if new_intr_file:
         try:
@@ -1157,6 +1229,12 @@ def main() -> int:
                   f"cx={NEW_INTRINSICS['cx']:.2f} cy={NEW_INTRINSICS['cy']:.2f}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[intrinsics] NEW file unavailable ({exc}); using fallback {NEW_INTRINSICS}", flush=True)
+        try:
+            NEW_DIST = _load_left_dist_coeffs_file(new_intr_file)
+            print(f"[dist] NEW from {new_intr_file}: "
+                  f"{[round(v, 6) for v in NEW_DIST]}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[dist] NEW dist unavailable ({exc}); using zeros (no undistortion)", flush=True)
 
     if args.our_method:
         scripts_dir = Path(__file__).resolve().parents[3]

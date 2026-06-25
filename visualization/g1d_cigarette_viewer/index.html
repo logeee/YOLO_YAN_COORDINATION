@@ -70,6 +70,10 @@
             <input id="useOurPnp" type="checkbox" />
             <span>⑤ 我们的 PnP（默认不选）</span>
           </label>
+          <label class="method-check method-newdist">
+            <input id="showNewNewDist" type="checkbox" checked />
+            <span>⑥ 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
+          </label>
           <label class="method-check">
             <input id="centerOnly" type="checkbox" />
             <span>只显示中心点（隐藏盒子外形）</span>
@@ -93,8 +97,10 @@
             <div><dt>③ 新内参 + 新外参</dt><dd id="baseCoordNewNew">-</dd></div>
             <div><dt>④ 新内参 + 老外参</dt><dd id="baseCoordNewOld">-</dd></div>
             <div><dt>⑤ 我们的 PnP + 手眼</dt><dd id="baseCoordOurs">-</dd></div>
+            <div><dt>⑥ 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordNewDist">-</dd></div>
             <div><dt>外参差 (①→②)</dt><dd id="baseCoordDeltaEx">-</dd></div>
             <div><dt>内参差 (②→③)</dt><dd id="baseCoordDeltaIn">-</dd></div>
+            <div><dt>畸变差 (③→⑥)</dt><dd id="baseCoordDeltaDist">-</dd></div>
           </dl>
           <div class="button-row">
             <button id="baseCoordRefresh" class="primary-action" type="button">获取基座坐标</button>

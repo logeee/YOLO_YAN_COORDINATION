@@ -372,6 +372,10 @@ body.compact-mode .legend i {
   color: #ffa64d;
 }
 
+.method-check.method-newdist span {
+  color: #ff6fd8;
+}
+
 .pick-panel {
   display: flex;
   flex-direction: column;

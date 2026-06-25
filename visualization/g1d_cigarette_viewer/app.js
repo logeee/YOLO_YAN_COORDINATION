@@ -50,8 +50,10 @@ const dom = {
   baseCoordNewNew: document.querySelector("#baseCoordNewNew"),
   baseCoordNewOld: document.querySelector("#baseCoordNewOld"),
   baseCoordOurs: document.querySelector("#baseCoordOurs"),
+  baseCoordNewDist: document.querySelector("#baseCoordNewDist"),
   baseCoordDeltaEx: document.querySelector("#baseCoordDeltaEx"),
   baseCoordDeltaIn: document.querySelector("#baseCoordDeltaIn"),
+  baseCoordDeltaDist: document.querySelector("#baseCoordDeltaDist"),
   baseCoordRefresh: document.querySelector("#baseCoordRefresh"),
   baseCoordStatus: document.querySelector("#baseCoordStatus"),
   useOurPnp: document.querySelector("#useOurPnp"),
@@ -65,6 +67,7 @@ const dom = {
   showOldNew: document.querySelector("#showOldNew"),
   showNewNew: document.querySelector("#showNewNew"),
   showNewOld: document.querySelector("#showNewOld"),
+  showNewNewDist: document.querySelector("#showNewNewDist"),
   centerOnly: document.querySelector("#centerOnly"),
   autoRefresh: document.querySelector("#autoRefresh"),
   autoInterval: document.querySelector("#autoInterval"),
@@ -204,7 +207,7 @@ function bindEvents() {
       if (currentPose) renderPose(currentPose, { frame: false });
     });
   }
-  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.centerOnly]) {
+  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.centerOnly]) {
     if (!toggle) continue;
     toggle.addEventListener("change", () => {
       if (currentPose) {
@@ -351,6 +354,7 @@ const BOX_EDGE_NEW = 0x4fd8ff;     // ② 老内参 + 新外参(青)
 const BOX_EDGE_NEWINTR = 0x59e6a7; // ③ 新内参 + 新外参(绿)
 const BOX_EDGE_NEWOLD = 0xffe14d;  // ④ 新内参 + 老外参(黄)
 const BOX_EDGE_OURS = 0xb38bff;    // ⑤ 我们自己的 PnP(紫)
+const BOX_EDGE_NEWDIST = 0xff6fd8; // ⑥ 新内参 + 新外参 + 畸变校正(粉)
 
 // Build the full box orientation from our PnP axes (falls back to yaw only).
 function ourPnpQuat(ourMethod, torsoQuat) {
@@ -381,6 +385,7 @@ function renderPose(pose, { frame = false } = {}) {
   const wantNewNew = dom.showNewNew ? dom.showNewNew.checked : true; // ③ 新内+新外
   const wantNewOld = dom.showNewOld ? dom.showNewOld.checked : true; // ④ 新内+老外
   const wantOurs = dom.useOurPnp ? dom.useOurPnp.checked : false;    // ⑤ 我们的 PnP
+  const wantNewDist = dom.showNewNewDist ? dom.showNewNewDist.checked : true; // ⑥ 新内+新外+畸变
   const centerOnly = dom.centerOnly ? dom.centerOnly.checked : false;
 
   const drawOldOld = wantOldOld && bc && Array.isArray(bc.c_old_old_m);
@@ -388,8 +393,9 @@ function renderPose(pose, { frame = false } = {}) {
   const drawNewNew = wantNewNew && bc && Array.isArray(bc.c_new_new_m);
   const drawNewOld = wantNewOld && bc && Array.isArray(bc.c_new_old_m);
   const drawOurs = wantOurs && ourMethod && Array.isArray(ourMethod.center_base_m);
+  const drawNewDist = wantNewDist && bc && Array.isArray(bc.c_new_new_dist_m);
 
-  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawOurs) {
+  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawOurs && !drawNewDist) {
     setStatus(bc || ourMethod ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
     if (dom.metricDelta) dom.metricDelta.textContent = "-";
     writeSceneState();
@@ -420,6 +426,7 @@ function renderPose(pose, { frame = false } = {}) {
   let cNewNew = null;
   let cNewOld = null;
   let cOurs = null;
+  let cNewDist = null;
   let focus = null;
 
   // ① 老内参 + 老外参: OLD-intrinsics point + nominal URDF.
@@ -447,6 +454,11 @@ function renderPose(pose, { frame = false } = {}) {
     cOurs = drawMethod(ourMethod.center_base_m, ourPnpQuat(ourMethod, torsoQuat), BOX_EDGE_OURS, "⑤我们PnP", "⑤", ourMethod.camera_offset_m);
     focus = cOurs; // prefer framing on our own result when shown
   }
+  // ⑥ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
+  if (drawNewDist) {
+    cNewDist = drawMethod(bc.c_new_new_dist_m, yawQuat, BOX_EDGE_NEWDIST, "⑥新内+新外+畸变", "⑥", bc.cam_new_ex_m);
+    if (!focus) focus = cNewDist;
+  }
 
   // metricDelta = 外参差(①→②, 同一 OLD 内参点, 仅外参不同)。
   if (dom.metricDelta) {
@@ -454,7 +466,7 @@ function renderPose(pose, { frame = false } = {}) {
   }
 
   window.__g1dVisualizerState.cigaretteObjects = countObjects(cigaretteGroup);
-  const primary = cNewNew || cOldNew || cNewOld || cOldOld || cOurs;
+  const primary = cNewNew || cNewDist || cOldNew || cNewOld || cOldOld || cOurs;
   if (primary) window.__g1dVisualizerState.lastCenterRobotM = [primary.x, primary.y, primary.z];
   writeSceneState();
 
@@ -516,17 +528,21 @@ function updateBaseCoordMetrics(pose) {
   if (dom.baseCoordNewNew) dom.baseCoordNewNew.textContent = bc ? formatBaseCoordMm(bc.c_new_new_m) : "-";
   if (dom.baseCoordNewOld) dom.baseCoordNewOld.textContent = bc ? formatBaseCoordMm(bc.c_new_old_m) : "-";
   if (dom.baseCoordOurs) dom.baseCoordOurs.textContent = our ? formatBaseCoordMm(our.center_base_m) : "-";
+  if (dom.baseCoordNewDist) dom.baseCoordNewDist.textContent = bc ? formatBaseCoordMm(bc.c_new_new_dist_m) : "-";
   if (dom.baseCoordDeltaEx) {
     dom.baseCoordDeltaEx.textContent = bc && bc.delta_ex_mm != null ? `${Math.round(bc.delta_ex_mm)} mm` : "-";
   }
   if (dom.baseCoordDeltaIn) {
     dom.baseCoordDeltaIn.textContent = bc && bc.delta_in_mm != null ? `${Math.round(bc.delta_in_mm)} mm` : "-";
   }
+  if (dom.baseCoordDeltaDist) {
+    dom.baseCoordDeltaDist.textContent = bc && bc.delta_dist_mm != null ? `${Math.round(bc.delta_dist_mm)} mm` : "-";
+  }
 
   if (dom.baseCoordStatus) {
     if (bc) {
       dom.baseCoordStatus.textContent =
-        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③)`;
+        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③, 畸变差=③→⑥)`;
     } else if (om && om.error) {
       dom.baseCoordStatus.textContent = `无坐标: ${om.error}`;
     } else {
