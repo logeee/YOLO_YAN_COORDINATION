@@ -50,6 +50,10 @@
 
         <div class="method-toggle">
           <span class="method-toggle-title">方法对比</span>
+          <div class="button-row two-col">
+            <button id="selectAllMethods" type="button">全选</button>
+            <button id="clearAllMethods" type="button">全不选</button>
+          </div>
           <label class="method-check method-old">
             <input id="showOldOld" type="checkbox" checked />
             <span>① 老内参 + 老外参 (YOLO PnP)</span>
@@ -66,13 +70,9 @@
             <input id="showNewOld" type="checkbox" checked />
             <span>④ 新内参 + 老外参 (YOLO PnP)</span>
           </label>
-          <label class="method-check">
-            <input id="useOurPnp" type="checkbox" />
-            <span>⑤ 我们的 PnP（默认不选）</span>
-          </label>
           <label class="method-check method-newdist">
             <input id="showNewNewDist" type="checkbox" checked />
-            <span>⑥ 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
+            <span>⑤ 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
           </label>
           <label class="method-check">
             <input id="centerOnly" type="checkbox" />
@@ -96,13 +96,12 @@
             <div><dt>② 老内参 + 新外参</dt><dd id="baseCoordOldNew">-</dd></div>
             <div><dt>③ 新内参 + 新外参</dt><dd id="baseCoordNewNew">-</dd></div>
             <div><dt>④ 新内参 + 老外参</dt><dd id="baseCoordNewOld">-</dd></div>
-            <div><dt>⑤ 我们的 PnP + 手眼</dt><dd id="baseCoordOurs">-</dd></div>
-            <div><dt>⑥ 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordNewDist">-</dd></div>
+            <div><dt>⑤ 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordNewDist">-</dd></div>
             <div><dt>外参差 (①→②)</dt><dd id="baseCoordDeltaEx">-</dd></div>
             <div><dt>内参差 (②→③)</dt><dd id="baseCoordDeltaIn">-</dd></div>
-            <div><dt>畸变差 (③→⑥)</dt><dd id="baseCoordDeltaDist">-</dd></div>
+            <div><dt>畸变差 (③→⑤)</dt><dd id="baseCoordDeltaDist">-</dd></div>
           </dl>
-          <div class="button-row">
+          <div class="button-row data-row">
             <button id="baseCoordRefresh" class="primary-action" type="button">获取基座坐标</button>
           </div>
           <p id="baseCoordStatus" class="pick-status">点"获取基座坐标"后显示 (torso_link 系, [X前, Y左, Z上], 单位 mm)</p>
@@ -137,8 +136,8 @@
 
         <div class="pick-panel" id="readyPanel">
           <span class="method-toggle-title">预备位姿(抬臂防撞桌)</span>
-          <div class="button-row">
-            <button id="rpSave" class="primary-action" type="button">保存当前姿态为预备位姿</button>
+          <div class="button-row two-col">
+            <button id="rpSave" class="primary-action" type="button">保存为预备位姿</button>
             <button id="rpLoad" type="button">查看已存</button>
           </div>
           <p id="readyStatus" class="pick-status">先手动把机械臂抬到理想区域,再点保存</p>

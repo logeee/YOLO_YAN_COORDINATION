@@ -49,14 +49,14 @@ const dom = {
   baseCoordOldNew: document.querySelector("#baseCoordOldNew"),
   baseCoordNewNew: document.querySelector("#baseCoordNewNew"),
   baseCoordNewOld: document.querySelector("#baseCoordNewOld"),
-  baseCoordOurs: document.querySelector("#baseCoordOurs"),
   baseCoordNewDist: document.querySelector("#baseCoordNewDist"),
   baseCoordDeltaEx: document.querySelector("#baseCoordDeltaEx"),
   baseCoordDeltaIn: document.querySelector("#baseCoordDeltaIn"),
   baseCoordDeltaDist: document.querySelector("#baseCoordDeltaDist"),
   baseCoordRefresh: document.querySelector("#baseCoordRefresh"),
   baseCoordStatus: document.querySelector("#baseCoordStatus"),
-  useOurPnp: document.querySelector("#useOurPnp"),
+  selectAllMethods: document.querySelector("#selectAllMethods"),
+  clearAllMethods: document.querySelector("#clearAllMethods"),
   metricNear: document.querySelector("#metricNear"),
   metricTurn: document.querySelector("#metricTurn"),
   metricYaw: document.querySelector("#metricYaw"),
@@ -195,9 +195,18 @@ function bindEvents() {
   if (dom.baseCoordRefresh) {
     dom.baseCoordRefresh.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
   }
-  if (dom.useOurPnp) {
-    dom.useOurPnp.addEventListener("change", () => refreshSceneData({ fallbackToSample: false, silent: false }));
-  }
+  const methodToggles = () => [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist];
+  const setAllMethods = (checked) => {
+    for (const toggle of methodToggles()) {
+      if (toggle) toggle.checked = checked;
+    }
+    if (currentPose) {
+      renderPose(currentPose, { frame: false });
+      updateMetrics(currentPose);
+    }
+  };
+  if (dom.selectAllMethods) dom.selectAllMethods.addEventListener("click", () => setAllMethods(true));
+  if (dom.clearAllMethods) dom.clearAllMethods.addEventListener("click", () => setAllMethods(false));
   dom.normalViewBtn.addEventListener("click", () => setView("normal"));
   dom.topViewBtn.addEventListener("click", () => setView("top"));
   dom.sideViewBtn.addEventListener("click", () => setView("side"));
@@ -301,8 +310,6 @@ async function fetchPose({ fallbackToSample = false, silent = false } = {}) {
   if (dom.labelSelect.value) {
     url.searchParams.set("label", dom.labelSelect.value);
   }
-  // Default uses the colleague's PnP; only opt into our PnP when checked.
-  url.searchParams.set("our", dom.useOurPnp && dom.useOurPnp.checked ? "1" : "0");
   if (!silent) setStatus("读取 YOLO /xyz");
   try {
     const payload = await fetch(url).then((res) => res.json());
@@ -353,50 +360,32 @@ const BOX_EDGE_OLD = 0xffa64d;     // ① 老内参 + 老外参(橙)
 const BOX_EDGE_NEW = 0x4fd8ff;     // ② 老内参 + 新外参(青)
 const BOX_EDGE_NEWINTR = 0x59e6a7; // ③ 新内参 + 新外参(绿)
 const BOX_EDGE_NEWOLD = 0xffe14d;  // ④ 新内参 + 老外参(黄)
-const BOX_EDGE_OURS = 0xb38bff;    // ⑤ 我们自己的 PnP(紫)
-const BOX_EDGE_NEWDIST = 0xff6fd8; // ⑥ 新内参 + 新外参 + 畸变校正(粉)
-
-// Build the full box orientation from our PnP axes (falls back to yaw only).
-function ourPnpQuat(ourMethod, torsoQuat) {
-  const axes = ourMethod.box_axes_base;
-  if (axes && Array.isArray(axes.x) && Array.isArray(axes.y) && Array.isArray(axes.z)) {
-    const m = new THREE.Matrix4().makeBasis(
-      new THREE.Vector3(...axes.x),
-      new THREE.Vector3(...axes.y),
-      new THREE.Vector3(...axes.z),
-    );
-    return torsoQuat.clone().multiply(new THREE.Quaternion().setFromRotationMatrix(m));
-  }
-  return new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, Number(ourMethod.box_yaw_base_rad) || 0));
-}
+const BOX_EDGE_NEWDIST = 0xff6fd8; // ⑤ 新内参 + 新外参 + 畸变校正(粉)
 
 function renderPose(pose, { frame = false } = {}) {
   cigaretteGroup.clear();
   updateCameraMarker();
 
   // base_coords carries the YOLO-service PnP point under OLD vs NEW intrinsics,
-  // each mapped to base via nominal URDF / our hand-eye (3 categories).
-  // our_method is our OWN PnP (4th box, only when opted in).
+  // each mapped to base via nominal URDF / our hand-eye, plus a distortion-
+  // corrected NEW-intrinsics estimate (⑤).
   const bc = pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
-  const ourMethod = pose.our_method && pose.our_method.ok ? pose.our_method : null;
 
   const wantOldOld = dom.showOldOld ? dom.showOldOld.checked : true; // ① 老内+老外
   const wantOldNew = dom.showOldNew ? dom.showOldNew.checked : true; // ② 老内+新外
   const wantNewNew = dom.showNewNew ? dom.showNewNew.checked : true; // ③ 新内+新外
   const wantNewOld = dom.showNewOld ? dom.showNewOld.checked : true; // ④ 新内+老外
-  const wantOurs = dom.useOurPnp ? dom.useOurPnp.checked : false;    // ⑤ 我们的 PnP
-  const wantNewDist = dom.showNewNewDist ? dom.showNewNewDist.checked : true; // ⑥ 新内+新外+畸变
+  const wantNewDist = dom.showNewNewDist ? dom.showNewNewDist.checked : true; // ⑤ 新内+新外+畸变
   const centerOnly = dom.centerOnly ? dom.centerOnly.checked : false;
 
   const drawOldOld = wantOldOld && bc && Array.isArray(bc.c_old_old_m);
   const drawOldNew = wantOldNew && bc && Array.isArray(bc.c_old_new_m);
   const drawNewNew = wantNewNew && bc && Array.isArray(bc.c_new_new_m);
   const drawNewOld = wantNewOld && bc && Array.isArray(bc.c_new_old_m);
-  const drawOurs = wantOurs && ourMethod && Array.isArray(ourMethod.center_base_m);
   const drawNewDist = wantNewDist && bc && Array.isArray(bc.c_new_new_dist_m);
 
-  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawOurs && !drawNewDist) {
-    setStatus(bc || ourMethod ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
+  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist) {
+    setStatus(bc ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
     if (dom.metricDelta) dom.metricDelta.textContent = "-";
     writeSceneState();
     return;
@@ -425,7 +414,6 @@ function renderPose(pose, { frame = false } = {}) {
   let cOldNew = null;
   let cNewNew = null;
   let cNewOld = null;
-  let cOurs = null;
   let cNewDist = null;
   let focus = null;
 
@@ -449,14 +437,9 @@ function renderPose(pose, { frame = false } = {}) {
     cNewOld = drawMethod(bc.c_new_old_m, yawQuat, BOX_EDGE_NEWOLD, "④新内+老外", "④", bc.cam_old_ex_m);
     if (!focus) focus = cNewOld;
   }
-  // ⑤ 我们自己的 PnP + 我们手眼(勾选"使用我们的 PnP"才出现)。
-  if (drawOurs) {
-    cOurs = drawMethod(ourMethod.center_base_m, ourPnpQuat(ourMethod, torsoQuat), BOX_EDGE_OURS, "⑤我们PnP", "⑤", ourMethod.camera_offset_m);
-    focus = cOurs; // prefer framing on our own result when shown
-  }
-  // ⑥ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
+  // ⑤ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
   if (drawNewDist) {
-    cNewDist = drawMethod(bc.c_new_new_dist_m, yawQuat, BOX_EDGE_NEWDIST, "⑥新内+新外+畸变", "⑥", bc.cam_new_ex_m);
+    cNewDist = drawMethod(bc.c_new_new_dist_m, yawQuat, BOX_EDGE_NEWDIST, "⑤新内+新外+畸变", "⑤", bc.cam_new_ex_m);
     if (!focus) focus = cNewDist;
   }
 
@@ -466,7 +449,7 @@ function renderPose(pose, { frame = false } = {}) {
   }
 
   window.__g1dVisualizerState.cigaretteObjects = countObjects(cigaretteGroup);
-  const primary = cNewNew || cNewDist || cOldNew || cNewOld || cOldOld || cOurs;
+  const primary = cNewNew || cNewDist || cOldNew || cNewOld || cOldOld;
   if (primary) window.__g1dVisualizerState.lastCenterRobotM = [primary.x, primary.y, primary.z];
   writeSceneState();
 
@@ -520,14 +503,11 @@ function formatBaseCoordMm(m) {
 
 function updateBaseCoordMetrics(pose) {
   const bc = pose && pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
-  const om = pose && pose.our_method ? pose.our_method : null;
-  const our = om && om.ok ? om : null;
 
   if (dom.baseCoordOldOld) dom.baseCoordOldOld.textContent = bc ? formatBaseCoordMm(bc.c_old_old_m) : "-";
   if (dom.baseCoordOldNew) dom.baseCoordOldNew.textContent = bc ? formatBaseCoordMm(bc.c_old_new_m) : "-";
   if (dom.baseCoordNewNew) dom.baseCoordNewNew.textContent = bc ? formatBaseCoordMm(bc.c_new_new_m) : "-";
   if (dom.baseCoordNewOld) dom.baseCoordNewOld.textContent = bc ? formatBaseCoordMm(bc.c_new_old_m) : "-";
-  if (dom.baseCoordOurs) dom.baseCoordOurs.textContent = our ? formatBaseCoordMm(our.center_base_m) : "-";
   if (dom.baseCoordNewDist) dom.baseCoordNewDist.textContent = bc ? formatBaseCoordMm(bc.c_new_new_dist_m) : "-";
   if (dom.baseCoordDeltaEx) {
     dom.baseCoordDeltaEx.textContent = bc && bc.delta_ex_mm != null ? `${Math.round(bc.delta_ex_mm)} mm` : "-";
@@ -542,9 +522,7 @@ function updateBaseCoordMetrics(pose) {
   if (dom.baseCoordStatus) {
     if (bc) {
       dom.baseCoordStatus.textContent =
-        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③, 畸变差=③→⑥)`;
-    } else if (om && om.error) {
-      dom.baseCoordStatus.textContent = `无坐标: ${om.error}`;
+        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③, 畸变差=③→⑤)`;
     } else {
       dom.baseCoordStatus.textContent = "无目标点(未检测到目标, 或服务端未加载标定矩阵)";
     }

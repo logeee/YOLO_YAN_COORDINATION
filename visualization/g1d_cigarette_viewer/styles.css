@@ -113,13 +113,25 @@ textarea:focus {
   grid-template-columns: 1fr;
 }
 
+.button-row.two-col {
+  grid-template-columns: 1fr 1fr;
+}
+
 button {
-  height: 38px;
+  min-height: 38px;
+  padding: 6px 10px;
   border: 1px solid #4b5c68;
   border-radius: 6px;
   color: #f7fbff;
   background: #27343d;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  line-height: 1.25;
+  white-space: normal;
+  word-break: break-word;
 }
 
 button:hover {
