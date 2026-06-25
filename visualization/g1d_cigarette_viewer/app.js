@@ -45,12 +45,53 @@ const dom = {
   metricLabel: document.querySelector("#metricLabel"),
   metricForward: document.querySelector("#metricForward"),
   metricVertical: document.querySelector("#metricVertical"),
+  baseCoordOldOld: document.querySelector("#baseCoordOldOld"),
+  baseCoordOldNew: document.querySelector("#baseCoordOldNew"),
+  baseCoordNewNew: document.querySelector("#baseCoordNewNew"),
+  baseCoordNewOld: document.querySelector("#baseCoordNewOld"),
+  baseCoordNewDist: document.querySelector("#baseCoordNewDist"),
+  baseCoordRightNew: document.querySelector("#baseCoordRightNew"),
+  baseCoordRightNewDist: document.querySelector("#baseCoordRightNewDist"),
+  baseCoordStereo: document.querySelector("#baseCoordStereo"),
+  baseCoordStereoPlane: document.querySelector("#baseCoordStereoPlane"),
+  baseCoordDeltaEx: document.querySelector("#baseCoordDeltaEx"),
+  baseCoordDeltaIn: document.querySelector("#baseCoordDeltaIn"),
+  baseCoordDeltaDist: document.querySelector("#baseCoordDeltaDist"),
+  baseCoordDeltaRightDist: document.querySelector("#baseCoordDeltaRightDist"),
+  baseCoordDeltaStereo: document.querySelector("#baseCoordDeltaStereo"),
+  baseCoordDeltaStereoPlane: document.querySelector("#baseCoordDeltaStereoPlane"),
+  baseCoordRefresh: document.querySelector("#baseCoordRefresh"),
+  baseCoordStatus: document.querySelector("#baseCoordStatus"),
+  selectAllMethods: document.querySelector("#selectAllMethods"),
+  clearAllMethods: document.querySelector("#clearAllMethods"),
   metricNear: document.querySelector("#metricNear"),
   metricTurn: document.querySelector("#metricTurn"),
   metricYaw: document.querySelector("#metricYaw"),
+  metricDelta: document.querySelector("#metricDelta"),
   metricState: document.querySelector("#metricState"),
   sceneState: document.querySelector("#sceneState"),
+  showOldOld: document.querySelector("#showOldOld"),
+  showOldNew: document.querySelector("#showOldNew"),
+  showNewNew: document.querySelector("#showNewNew"),
+  showNewOld: document.querySelector("#showNewOld"),
+  showNewNewDist: document.querySelector("#showNewNewDist"),
+  showRightNew: document.querySelector("#showRightNew"),
+  showRightNewDist: document.querySelector("#showRightNewDist"),
+  showStereo: document.querySelector("#showStereo"),
+  showStereoPlane: document.querySelector("#showStereoPlane"),
+  centerOnly: document.querySelector("#centerOnly"),
+  showXPlane: document.querySelector("#showXPlane"),
+  xPlaneMm: document.querySelector("#xPlaneMm"),
+  showYPlane: document.querySelector("#showYPlane"),
+  yPlaneMm: document.querySelector("#yPlaneMm"),
+  showZPlane: document.querySelector("#showZPlane"),
+  zPlaneMm: document.querySelector("#zPlaneMm"),
+  autoRefresh: document.querySelector("#autoRefresh"),
+  autoInterval: document.querySelector("#autoInterval"),
 };
+
+let autoRefreshTimer = null;
+let autoRefreshInFlight = false;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0c1014);
@@ -80,7 +121,8 @@ scene.add(root);
 const robotGroup = new THREE.Group();
 const cigaretteGroup = new THREE.Group();
 const cameraMarkerGroup = new THREE.Group();
-root.add(robotGroup, cigaretteGroup, cameraMarkerGroup);
+const zPlaneGroup = new THREE.Group();
+root.add(robotGroup, cigaretteGroup, cameraMarkerGroup, zPlaneGroup);
 
 const materials = {
   robot: new THREE.MeshStandardMaterial({ color: 0x9fb8c8, roughness: 0.75, metalness: 0.05 }),
@@ -112,6 +154,7 @@ let lastFrameBox = null;
 let pendingFrameRequest = 0;
 let urdfJointControls = new Map();
 let urdfLinkGroups = new Map();
+let lastJointState = {};
 
 init();
 
@@ -167,19 +210,77 @@ function applyUrlParams() {
 
 function bindEvents() {
   dom.fetchBtn.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
+  if (dom.baseCoordRefresh) {
+    dom.baseCoordRefresh.addEventListener("click", () => refreshSceneData({ fallbackToSample: false, silent: false }));
+  }
+  const methodToggles = () => [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.showStereo, dom.showStereoPlane];
+  const setAllMethods = (checked) => {
+    for (const toggle of methodToggles()) {
+      if (toggle) toggle.checked = checked;
+    }
+    updateBaseCoordVisibility();
+    if (currentPose) {
+      renderPose(currentPose, { frame: false });
+      updateMetrics(currentPose);
+    }
+  };
+  if (dom.selectAllMethods) dom.selectAllMethods.addEventListener("click", () => setAllMethods(true));
+  if (dom.clearAllMethods) dom.clearAllMethods.addEventListener("click", () => setAllMethods(false));
   dom.normalViewBtn.addEventListener("click", () => setView("normal"));
   dom.topViewBtn.addEventListener("click", () => setView("top"));
   dom.sideViewBtn.addEventListener("click", () => setView("side"));
   for (const input of [dom.thicknessMm]) {
     input.addEventListener("input", () => {
       updateCameraMarker();
-      if (currentPose) renderPose(currentPose);
+      if (currentPose) renderPose(currentPose, { frame: false });
     });
   }
+  for (const el of [dom.showXPlane, dom.showYPlane, dom.showZPlane]) {
+    if (el) el.addEventListener("change", () => updateBasePlanes());
+  }
+  for (const el of [dom.xPlaneMm, dom.yPlaneMm, dom.zPlaneMm]) {
+    if (el) el.addEventListener("input", () => updateBasePlanes());
+  }
+  for (const toggle of [dom.showOldOld, dom.showOldNew, dom.showNewNew, dom.showNewOld, dom.showNewNewDist, dom.showRightNew, dom.showRightNewDist, dom.showStereo, dom.showStereoPlane, dom.centerOnly]) {
+    if (!toggle) continue;
+    toggle.addEventListener("change", () => {
+      updateBaseCoordVisibility();
+      if (currentPose) {
+        renderPose(currentPose, { frame: false });
+        updateMetrics(currentPose);
+      }
+    });
+  }
+  updateBaseCoordVisibility();
+  if (dom.autoRefresh) dom.autoRefresh.addEventListener("change", applyAutoRefresh);
+  if (dom.autoInterval) dom.autoInterval.addEventListener("change", applyAutoRefresh);
+  applyAutoRefresh();
 
   const resizeObserver = new ResizeObserver(resize);
   resizeObserver.observe(dom.viewport);
   resize();
+}
+
+function applyAutoRefresh() {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+  }
+  if (!dom.autoRefresh || !dom.autoRefresh.checked) return;
+  const intervalMs = Math.max(100, Number(dom.autoInterval?.value) || 500);
+  autoRefreshTimer = setInterval(async () => {
+    if (autoRefreshInFlight) return; // skip if the previous refresh is still running
+    autoRefreshInFlight = true;
+    try {
+      // Only refresh the ARM/robot joint state (cheap DDS read). Do NOT re-run
+      // YOLO and do NOT re-frame the camera, so the viewpoint stays put.
+      await fetchRobotState({ silent: true });
+    } catch {
+      /* errors already surfaced via status text */
+    } finally {
+      autoRefreshInFlight = false;
+    }
+  }, intervalMs);
 }
 
 function bindEmbeddedMessages() {
@@ -275,80 +376,274 @@ async function fetchRobotState({ silent = false } = {}) {
   }
 }
 
-function applyPose(pose, status) {
+function applyPose(pose, status, { frame = true } = {}) {
   currentPose = pose;
-  renderPose(pose);
+  renderPose(pose, { frame });
   updateMetrics(pose);
   setStatus(status);
 }
 
-function renderPose(pose) {
+const BOX_EDGE_OLD = 0xffa64d;     // ① 老内参 + 老外参(橙)
+const BOX_EDGE_NEW = 0x4fd8ff;     // ② 老内参 + 新外参(青)
+const BOX_EDGE_NEWINTR = 0x59e6a7; // ③ 新内参 + 新外参(绿)
+const BOX_EDGE_NEWOLD = 0xffe14d;  // ④ 新内参 + 老外参(黄)
+const BOX_EDGE_NEWDIST = 0xff6fd8; // ⑤ 新内参 + 新外参 + 畸变校正(粉)
+const BOX_EDGE_RIGHT = 0x9d7bff;     // ⑥ 右眼 新内参 + 新外参(紫)
+const BOX_EDGE_RIGHTDIST = 0xff8c42; // ⑦ 右眼 新内参 + 新外参 + 畸变校正(橙红)
+const BOX_EDGE_STEREO = 0x00e0c0;    // ⑧ 双目深度(青绿)
+const BOX_EDGE_STEREOPLANE = 0xffd24a; // ⑨ 双目深度+mask内特征匹配(金黄)
+
+function renderPose(pose, { frame = false } = {}) {
   cigaretteGroup.clear();
   updateCameraMarker();
 
-  const center = getPoint(pose.center_xyz_mm || pose.near_edge_midpoint_xyz_mm);
-  if (!center) {
-    setStatus("缺少 center_xyz_mm");
+  // base_coords carries the YOLO-service PnP point under OLD vs NEW intrinsics,
+  // each mapped to base via nominal URDF / our hand-eye, plus a distortion-
+  // corrected NEW-intrinsics estimate (⑤).
+  const bc = pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
+
+  const wantOldOld = dom.showOldOld ? dom.showOldOld.checked : true; // ① 老内+老外
+  const wantOldNew = dom.showOldNew ? dom.showOldNew.checked : true; // ② 老内+新外
+  const wantNewNew = dom.showNewNew ? dom.showNewNew.checked : true; // ③ 新内+新外
+  const wantNewOld = dom.showNewOld ? dom.showNewOld.checked : true; // ④ 新内+老外
+  const wantNewDist = dom.showNewNewDist ? dom.showNewNewDist.checked : true; // ⑤ 新内+新外+畸变
+  const wantRightNew = dom.showRightNew ? dom.showRightNew.checked : true; // ⑥ 右眼 新内+新外
+  const wantRightNewDist = dom.showRightNewDist ? dom.showRightNewDist.checked : true; // ⑦ 右眼 新内+新外+畸变
+  const wantStereo = dom.showStereo ? dom.showStereo.checked : true; // ⑧ 双目深度
+  const wantStereoPlane = dom.showStereoPlane ? dom.showStereoPlane.checked : true; // ⑨ 双目深度+mask内特征匹配
+  const centerOnly = dom.centerOnly ? dom.centerOnly.checked : false;
+
+  const drawOldOld = wantOldOld && bc && Array.isArray(bc.c_old_old_m);
+  const drawOldNew = wantOldNew && bc && Array.isArray(bc.c_old_new_m);
+  const drawNewNew = wantNewNew && bc && Array.isArray(bc.c_new_new_m);
+  const drawNewOld = wantNewOld && bc && Array.isArray(bc.c_new_old_m);
+  const drawNewDist = wantNewDist && bc && Array.isArray(bc.c_new_new_dist_m);
+  const drawRightNew = wantRightNew && bc && Array.isArray(bc.c_right_new_m);
+  const drawRightNewDist = wantRightNewDist && bc && Array.isArray(bc.c_right_new_dist_m);
+  const drawStereo = wantStereo && bc && Array.isArray(bc.c_stereo_m);
+  const drawStereoPlane = wantStereoPlane && bc && Array.isArray(bc.c_stereo_plane_m);
+
+  if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist && !drawRightNew && !drawRightNewDist && !drawStereo && !drawStereoPlane) {
+    setStatus(bc ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
+    if (dom.metricDelta) dom.metricDelta.textContent = "-";
+    writeSceneState();
     return;
   }
 
-  const cameraFrame = getCameraFrame(pose);
-  const cameraMount = cameraFrame.origin;
-  const centerRobot = opticalPointToRobot(center, pose).add(cameraMount);
   const dims = getBoxDimensions(pose);
-  const yaw = getBoxYawRobotRad(pose);
+  const torso = getLinkWorldTransform(DEFAULT_CAMERA_PARENT_LINK);
+  const torsoPos = torso?.position?.clone() || new THREE.Vector3();
+  const torsoQuat = torso?.quaternion || new THREE.Quaternion();
+  const torsoToWorld = (m) => torsoPos.clone().add(new THREE.Vector3(...m).applyQuaternion(torsoQuat));
+  // Colleague yaw (robot/torso frame) shared by the YOLO-PnP boxes.
+  const yawQuat = torsoQuat.clone().multiply(
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, getBoxYawRobotRad(pose))),
+  );
 
+  // Draw one method: center marker always; box shape only when not center-only.
+  const drawMethod = (centerM, quat, color, boxTag, markerTag, camOffsetM) => {
+    const center = torsoToWorld(centerM);
+    if (!centerOnly) drawCigaretteBox(center, quat, dims, color, boxTag);
+    addPointMarker(cigaretteGroup, center, color, markerTag);
+    if (Array.isArray(camOffsetM)) addCameraToBoxLine(torsoToWorld(camOffsetM), center, color);
+    return center;
+  };
+
+  let cOldOld = null;
+  let cOldNew = null;
+  let cNewNew = null;
+  let cNewOld = null;
+  let cNewDist = null;
+  let cRightNew = null;
+  let cRightNewDist = null;
+  let cStereo = null;
+  let cStereoPlane = null;
+  let focus = null;
+
+  // ① 老内参 + 老外参: OLD-intrinsics point + nominal URDF.
+  if (drawOldOld) {
+    cOldOld = drawMethod(bc.c_old_old_m, yawQuat, BOX_EDGE_OLD, "①老内+老外", "①", bc.cam_old_ex_m);
+    focus = cOldOld;
+  }
+  // ② 老内参 + 新外参: OLD-intrinsics point + our hand-eye.
+  if (drawOldNew) {
+    cOldNew = drawMethod(bc.c_old_new_m, yawQuat, BOX_EDGE_NEW, "②老内+新外", "②", bc.cam_new_ex_m);
+    if (!focus) focus = cOldNew;
+  }
+  // ③ 新内参 + 新外参: NEW-intrinsics point + our hand-eye.
+  if (drawNewNew) {
+    cNewNew = drawMethod(bc.c_new_new_m, yawQuat, BOX_EDGE_NEWINTR, "③新内+新外", "③", bc.cam_new_ex_m);
+    if (!focus) focus = cNewNew;
+  }
+  // ④ 新内参 + 老外参: NEW-intrinsics point + nominal URDF.
+  if (drawNewOld) {
+    cNewOld = drawMethod(bc.c_new_old_m, yawQuat, BOX_EDGE_NEWOLD, "④新内+老外", "④", bc.cam_old_ex_m);
+    if (!focus) focus = cNewOld;
+  }
+  // ⑤ 新内参 + 新外参 + 畸变校正: NEW-intrinsics-undistorted point + our hand-eye.
+  if (drawNewDist) {
+    cNewDist = drawMethod(bc.c_new_new_dist_m, yawQuat, BOX_EDGE_NEWDIST, "⑤新内+新外+畸变", "⑤", bc.cam_new_ex_m);
+    if (!focus) focus = cNewDist;
+  }
+  // ⑥ 右眼 新内参 + 新外参: right-eye NEW point (dist=0) + right hand-eye.
+  if (drawRightNew) {
+    cRightNew = drawMethod(bc.c_right_new_m, yawQuat, BOX_EDGE_RIGHT, "⑥右眼新内+新外", "⑥", bc.cam_right_ex_m);
+    if (!focus) focus = cRightNew;
+  }
+  // ⑦ 右眼 新内参 + 新外参 + 畸变校正: right-eye undistorted point + right hand-eye.
+  if (drawRightNewDist) {
+    cRightNewDist = drawMethod(bc.c_right_new_dist_m, yawQuat, BOX_EDGE_RIGHTDIST, "⑦右眼新内+新外+畸变", "⑦", bc.cam_right_ex_m);
+    if (!focus) focus = cRightNewDist;
+  }
+  // ⑧ 双目深度: stereo-triangulation center (left optical) + left hand-eye.
+  if (drawStereo) {
+    cStereo = drawMethod(bc.c_stereo_m, yawQuat, BOX_EDGE_STEREO, "⑧双目深度", "⑧", bc.cam_new_ex_m);
+    if (!focus) focus = cStereo;
+  }
+  // ⑨ 双目深度+mask内特征匹配: feature_epipolar_ransac center (left optical) + left hand-eye.
+  if (drawStereoPlane) {
+    cStereoPlane = drawMethod(bc.c_stereo_plane_m, yawQuat, BOX_EDGE_STEREOPLANE, "⑨双目+mask特征", "⑨", bc.cam_new_ex_m);
+    if (!focus) focus = cStereoPlane;
+  }
+
+  // metricDelta = 外参差(①→②, 同一 OLD 内参点, 仅外参不同)。
+  if (dom.metricDelta) {
+    dom.metricDelta.textContent = bc && bc.delta_ex_mm != null ? `${Math.round(bc.delta_ex_mm)} mm` : "-";
+  }
+
+  window.__g1dVisualizerState.cigaretteObjects = countObjects(cigaretteGroup);
+  const primary = cNewNew || cNewDist || cOldNew || cNewOld || cOldOld;
+  if (primary) window.__g1dVisualizerState.lastCenterRobotM = [primary.x, primary.y, primary.z];
+  writeSceneState();
+
+  if (frame && focus) frameScene(focus);
+}
+
+function colorToHex(color) {
+  return `#${color.toString(16).padStart(6, "0")}`;
+}
+
+function drawCigaretteBox(centerRobot, quat, dims, edgeColor, tagText) {
   const boxGroup = new THREE.Group();
   boxGroup.position.copy(centerRobot);
-  boxGroup.rotation.z = yaw;
+  boxGroup.quaternion.copy(quat);
 
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(dims.long, dims.short, dims.thickness),
-    materials.box,
-  );
+  const body = new THREE.Mesh(new THREE.BoxGeometry(dims.long, dims.short, dims.thickness), materials.box);
   body.position.z = -dims.thickness / 2;
   boxGroup.add(body);
 
-  const top = new THREE.Mesh(
-    new THREE.BoxGeometry(dims.long * 1.002, dims.short * 1.002, 0.003),
-    materials.boxTop,
-  );
+  const top = new THREE.Mesh(new THREE.BoxGeometry(dims.long * 1.002, dims.short * 1.002, 0.003), materials.boxTop);
   top.position.z = 0.002;
   boxGroup.add(top);
 
   const edges = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(dims.long, dims.short, dims.thickness)),
-    new THREE.LineBasicMaterial({ color: 0xf9e08c }),
+    new THREE.LineBasicMaterial({ color: edgeColor }),
   );
   edges.position.z = -dims.thickness / 2;
   boxGroup.add(edges);
 
-  addLocalArrow(boxGroup, new THREE.Vector3(0, 0, 0.016), new THREE.Vector3(dims.long * 0.52, 0, 0), 0xf25f5c);
-  addLabel(boxGroup, "head", new THREE.Vector3(dims.long * 0.55, 0, 0.055), "#f25f5c");
-  addLabel(boxGroup, getPoseLabel(pose), new THREE.Vector3(0, 0, 0.075), "#f7d774");
-
+  addLabel(boxGroup, tagText, new THREE.Vector3(0, 0, 0.075), colorToHex(edgeColor));
   cigaretteGroup.add(boxGroup);
-  addPointMarker(cigaretteGroup, centerRobot, 0xff4fd8, "center");
+}
 
-  const near = getPoint(pose.near_edge_midpoint_xyz_mm);
-  if (near) {
-    const nearRobot = opticalPointToRobot(near, pose).add(cameraMount);
-    addPointMarker(cigaretteGroup, nearRobot, 0x35d477, "near");
+function addCameraToBoxLine(cameraMount, centerRobot, color) {
+  const geometry = new THREE.BufferGeometry().setFromPoints([cameraMount, centerRobot]);
+  cigaretteGroup.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color })));
+  const distance = cameraMount.distanceTo(centerRobot);
+  addLabel(
+    cigaretteGroup,
+    `${Math.round(distance * 1000)} mm`,
+    centerRobot.clone().lerp(cameraMount, 0.5).add(new THREE.Vector3(0, 0, 0.05)),
+    colorToHex(color),
+  );
+}
+
+function formatBaseCoordMm(m) {
+  if (!Array.isArray(m) || m.length < 3) return "-";
+  return `[${(m[0] * 1000).toFixed(0)}, ${(m[1] * 1000).toFixed(0)}, ${(m[2] * 1000).toFixed(0)}] mm`;
+}
+
+// Show only the rows whose method checkbox is ticked above; a delta row shows
+// only when BOTH of its endpoint methods are ticked.
+function updateBaseCoordVisibility() {
+  const ck = (el) => (el ? el.checked : true);
+  const setRow = (dd, visible) => {
+    if (dd && dd.parentElement) dd.parentElement.style.display = visible ? "" : "none";
+  };
+  setRow(dom.baseCoordOldOld, ck(dom.showOldOld));
+  setRow(dom.baseCoordOldNew, ck(dom.showOldNew));
+  setRow(dom.baseCoordNewNew, ck(dom.showNewNew));
+  setRow(dom.baseCoordNewOld, ck(dom.showNewOld));
+  setRow(dom.baseCoordNewDist, ck(dom.showNewNewDist));
+  setRow(dom.baseCoordRightNew, ck(dom.showRightNew));
+  setRow(dom.baseCoordRightNewDist, ck(dom.showRightNewDist));
+  setRow(dom.baseCoordStereo, ck(dom.showStereo));
+  setRow(dom.baseCoordStereoPlane, ck(dom.showStereoPlane));
+  setRow(dom.baseCoordDeltaEx, ck(dom.showOldOld) && ck(dom.showOldNew));
+  setRow(dom.baseCoordDeltaIn, ck(dom.showOldNew) && ck(dom.showNewNew));
+  setRow(dom.baseCoordDeltaDist, ck(dom.showNewNew) && ck(dom.showNewNewDist));
+  setRow(dom.baseCoordDeltaRightDist, ck(dom.showRightNew) && ck(dom.showRightNewDist));
+  setRow(dom.baseCoordDeltaStereo, ck(dom.showStereo) && ck(dom.showNewNew));
+  setRow(dom.baseCoordDeltaStereoPlane, ck(dom.showStereoPlane) && ck(dom.showNewNew));
+}
+
+function updateBaseCoordMetrics(pose) {
+  const bc = pose && pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
+
+  updateBaseCoordVisibility();
+  if (dom.baseCoordOldOld) dom.baseCoordOldOld.textContent = bc ? formatBaseCoordMm(bc.c_old_old_m) : "-";
+  if (dom.baseCoordOldNew) dom.baseCoordOldNew.textContent = bc ? formatBaseCoordMm(bc.c_old_new_m) : "-";
+  if (dom.baseCoordNewNew) dom.baseCoordNewNew.textContent = bc ? formatBaseCoordMm(bc.c_new_new_m) : "-";
+  if (dom.baseCoordNewOld) dom.baseCoordNewOld.textContent = bc ? formatBaseCoordMm(bc.c_new_old_m) : "-";
+  if (dom.baseCoordNewDist) dom.baseCoordNewDist.textContent = bc ? formatBaseCoordMm(bc.c_new_new_dist_m) : "-";
+  if (dom.baseCoordRightNew) dom.baseCoordRightNew.textContent = bc ? formatBaseCoordMm(bc.c_right_new_m) : "-";
+  if (dom.baseCoordRightNewDist) dom.baseCoordRightNewDist.textContent = bc ? formatBaseCoordMm(bc.c_right_new_dist_m) : "-";
+  if (dom.baseCoordStereo) dom.baseCoordStereo.textContent = bc ? formatBaseCoordMm(bc.c_stereo_m) : "-";
+  if (dom.baseCoordStereoPlane) dom.baseCoordStereoPlane.textContent = bc ? formatBaseCoordMm(bc.c_stereo_plane_m) : "-";
+  if (dom.baseCoordDeltaEx) {
+    dom.baseCoordDeltaEx.textContent = bc && bc.delta_ex_mm != null ? `${Math.round(bc.delta_ex_mm)} mm` : "-";
+  }
+  if (dom.baseCoordDeltaIn) {
+    dom.baseCoordDeltaIn.textContent = bc && bc.delta_in_mm != null ? `${Math.round(bc.delta_in_mm)} mm` : "-";
+  }
+  if (dom.baseCoordDeltaDist) {
+    dom.baseCoordDeltaDist.textContent = bc && bc.delta_dist_mm != null ? `${Math.round(bc.delta_dist_mm)} mm` : "-";
+  }
+  if (dom.baseCoordDeltaRightDist) {
+    dom.baseCoordDeltaRightDist.textContent = bc && bc.delta_right_dist_mm != null ? `${Math.round(bc.delta_right_dist_mm)} mm` : "-";
+  }
+  if (dom.baseCoordDeltaStereo) {
+    dom.baseCoordDeltaStereo.textContent = bc && bc.delta_stereo_mm != null ? `${Math.round(bc.delta_stereo_mm)} mm` : "-";
+  }
+  if (dom.baseCoordDeltaStereoPlane) {
+    dom.baseCoordDeltaStereoPlane.textContent = bc && bc.delta_stereo_plane_mm != null ? `${Math.round(bc.delta_stereo_plane_mm)} mm` : "-";
   }
 
-  const lineGeometry = new THREE.BufferGeometry().setFromPoints([cameraMount, centerRobot]);
-  cigaretteGroup.add(new THREE.Line(lineGeometry, materials.line));
-
-  const distance = cameraMount.distanceTo(centerRobot);
-  addLabel(cigaretteGroup, `${Math.round(distance * 1000)} mm`, centerRobot.clone().lerp(cameraMount, 0.5).add(new THREE.Vector3(0, 0, 0.05)), "#ffffff");
-  window.__g1dVisualizerState.cigaretteObjects = countObjects(cigaretteGroup);
-  window.__g1dVisualizerState.lastCenterRobotM = [centerRobot.x, centerRobot.y, centerRobot.z];
-  writeSceneState();
-
-  frameScene(centerRobot);
+  if (dom.baseCoordStatus) {
+    if (bc) {
+      dom.baseCoordStatus.textContent =
+        `内参×外参对比 · torso_link 系 [X前, Y左, Z上] mm (外参差=①→②, 内参差=②→③, 左眼畸变差=③→⑤, 右眼畸变差=⑥→⑦)`;
+    } else {
+      dom.baseCoordStatus.textContent = "无目标点(未检测到目标, 或服务端未加载标定矩阵)";
+    }
+  }
 }
 
 function updateMetrics(pose) {
+  updateBaseCoordMetrics(pose);
+  const bc = pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
+  // Center metrics follow ③ 新内参+新外参 (the fully-calibrated estimate).
+  if (bc && Array.isArray(bc.c_new_new_m)) {
+    dom.metricLabel.textContent = getPoseLabel(pose);
+    dom.metricForward.textContent = formatMm(bc.c_new_new_m[0] * 1000);   // torso +X 前
+    dom.metricVertical.textContent = formatMm(-bc.c_new_new_m[2] * 1000); // torso -Z 下
+    dom.metricNear.textContent = "-";
+    dom.metricTurn.textContent = "-";
+    dom.metricYaw.textContent = "-";
+    dom.metricState.textContent = "③ 新内参+新外参";
+    return;
+  }
   const vizMetrics = pose.g1d_visualization?.metrics || {};
   dom.metricLabel.textContent = getPoseLabel(pose);
   const centerForward = vizMetrics.center_ground_forward_mm ?? pose.robot_alignment?.target?.ground_forward_mm;
@@ -376,11 +671,12 @@ function applyRobotState(state) {
     stateJointValues.LZ_mt_Joint = totalM / 2;
     stateJointValues.LZ_it_Joint = totalM / 2;
   }
+  lastJointState = stateJointValues;
   applyJointState(stateJointValues);
   updateColumnState();
   updateCameraMarker();
   if (currentPose) {
-    renderPose(currentPose);
+    renderPose(currentPose, { frame: false });
     updateMetrics(currentPose);
   }
   window.__g1dVisualizerState.robotStateSource = currentRobotState.source || "unknown";
@@ -849,7 +1145,61 @@ function updateCameraMarker() {
   body.quaternion.copy(frame.parentQuaternion);
   cameraMarkerGroup.add(body);
   addLabel(cameraMarkerGroup, "left camera", mount.clone().add(new THREE.Vector3(0.02, 0.02, 0.055)), "#9be2ff");
-  addCameraOpticalAxes(cameraMarkerGroup, frame);
+  updateBasePlanes();
+}
+
+// Constant-coordinate planes in the base (torso_link) frame (X 前, Y 左, Z 上),
+// e.g. the Z=0 ground plane, or an X / Y slice. Each plane is defined in
+// torso-local coords so it follows the robot's torso as the column/waist move.
+// Useful to eyeball whether a box center sits at a given base-frame coordinate.
+function _addBasePlane(axis, valueMm, color, torsoPos, torsoQuat) {
+  const v = numberOrDefault(valueMm, 0) / 1000;
+  // Offset of the plane center along the chosen torso-local axis.
+  const offset = new THREE.Vector3(axis === "x" ? v : 0, axis === "y" ? v : 0, axis === "z" ? v : 0);
+  const center = torsoPos.clone().add(offset.applyQuaternion(torsoQuat));
+  // PlaneGeometry lies in local XY with normal +Z. Rotate so the normal aligns
+  // with the requested torso axis: +Z->+X via +90° about Y; +Z->+Y via -90° about X.
+  const localQuat = new THREE.Quaternion();
+  if (axis === "x") localQuat.setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+  else if (axis === "y") localQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+  const quat = torsoQuat.clone().multiply(localQuat);
+
+  const size = 2.4;
+  const segments = 24;
+  const fill = new THREE.Mesh(
+    new THREE.PlaneGeometry(size, size),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  fill.position.copy(center);
+  fill.quaternion.copy(quat);
+  zPlaneGroup.add(fill);
+
+  const grid = new THREE.LineSegments(
+    new THREE.WireframeGeometry(new THREE.PlaneGeometry(size, size, segments, segments)),
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.28 }),
+  );
+  grid.position.copy(center);
+  grid.quaternion.copy(quat);
+  zPlaneGroup.add(grid);
+
+  const labelPos = center.clone().add(new THREE.Vector3(size / 2, size / 2, 0.02).applyQuaternion(quat));
+  addLabel(zPlaneGroup, `base ${axis.toUpperCase()}=${Math.round(v * 1000)}mm`, labelPos, `#${color.toString(16).padStart(6, "0")}`);
+}
+
+function updateBasePlanes() {
+  zPlaneGroup.clear();
+  const torso = getLinkWorldTransform(DEFAULT_CAMERA_PARENT_LINK);
+  const torsoPos = torso?.position?.clone() || new THREE.Vector3();
+  const torsoQuat = torso?.quaternion || new THREE.Quaternion();
+  if (dom.showXPlane && dom.showXPlane.checked) {
+    _addBasePlane("x", dom.xPlaneMm ? dom.xPlaneMm.value : 0, 0xff6f6f, torsoPos, torsoQuat);
+  }
+  if (dom.showYPlane && dom.showYPlane.checked) {
+    _addBasePlane("y", dom.yPlaneMm ? dom.yPlaneMm.value : 0, 0x6fdc6f, torsoPos, torsoQuat);
+  }
+  if (dom.showZPlane && dom.showZPlane.checked) {
+    _addBasePlane("z", dom.zPlaneMm ? dom.zPlaneMm.value : 0, 0x33c2ff, torsoPos, torsoQuat);
+  }
 }
 
 function getCameraMount() {
@@ -944,26 +1294,15 @@ function opticalVectorToRobot(vector, pose) {
 function getBoxDimensions(pose) {
   const label = getPoseLabel(pose);
   const catalog = CIGARETTE_SIZES_M[label] || CIGARETTE_SIZES_M.Xizi_Liqun;
-  const configured = pose.object_box_size_mm || pose.g1d_visualization?.box?.object_box_size_mm || null;
   let longSide = catalog.long;
   let shortSide = catalog.short;
-  let configuredThicknessMm = null;
-  if (configured && Number.isFinite(Number(configured.length_mm)) && Number.isFinite(Number(configured.width_mm))) {
-    const a = Number(configured.length_mm) / 1000;
-    const b = Number(configured.width_mm) / 1000;
-    longSide = Math.max(a, b);
-    shortSide = Math.min(a, b);
-    if (Number.isFinite(Number(configured.height_mm))) {
-      configuredThicknessMm = Number(configured.height_mm);
-    }
-  } else if (Array.isArray(pose.object_top_size_mm) && pose.object_top_size_mm.length >= 2) {
+  if (Array.isArray(pose.object_top_size_mm) && pose.object_top_size_mm.length >= 2) {
     const a = Number(pose.object_top_size_mm[0]) / 1000;
     const b = Number(pose.object_top_size_mm[1]) / 1000;
     longSide = Math.max(a, b);
     shortSide = Math.min(a, b);
   }
-  const thicknessMm = configuredThicknessMm ?? Number(dom.thicknessMm.value || catalog.thickness * 1000);
-  const thickness = Math.max(0.005, thicknessMm / 1000);
+  const thickness = Math.max(0.005, Number(dom.thicknessMm.value || catalog.thickness * 1000) / 1000);
   return { long: longSide, short: shortSide, thickness };
 }
 
@@ -1204,4 +1543,424 @@ function roundNumber(value, digits) {
 function numberOrDefault(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+// ---------------------------------------------------------------------------
+// Planned-trajectory playback (added for the suction-pick pipeline).
+// Loads a trajectory JSON exported by `pick.trajectory` and animates the arm
+// joints over time on top of the existing 3D robot, plus draws the planned box
+// and the pregrasp/grasp/lift targets. Purely additive to the live viewer.
+// ---------------------------------------------------------------------------
+const planGroup = new THREE.Group();
+root.add(planGroup);
+
+const pbDom = {
+  panel: document.querySelector("#playbackPanel"),
+  loadServer: document.querySelector("#pbLoadServer"),
+  file: document.querySelector("#pbFile"),
+  play: document.querySelector("#pbPlay"),
+  restart: document.querySelector("#pbRestart"),
+  speed: document.querySelector("#pbSpeed"),
+  slider: document.querySelector("#pbSlider"),
+  time: document.querySelector("#pbTime"),
+  phase: document.querySelector("#pbPhase"),
+  suction: document.querySelector("#pbSuction"),
+};
+
+const pb = {
+  traj: null,
+  jointNames: [],
+  samples: [],
+  times: [],
+  events: [],
+  duration: 0,
+  playing: false,
+  t: 0,
+  speed: 1,
+  lastWall: 0,
+  raf: 0,
+};
+
+if (pbDom.panel) bindPlaybackEvents();
+
+function bindPlaybackEvents() {
+  pbDom.loadServer.addEventListener("click", () => loadTrajectoryFromUrl("./pick_trajectory.json"));
+  pbDom.file.addEventListener("change", onPlaybackFile);
+  pbDom.play.addEventListener("click", togglePlay);
+  pbDom.restart.addEventListener("click", () => seekPlayback(0, { pause: true }));
+  pbDom.speed.addEventListener("change", () => { pb.speed = Number(pbDom.speed.value) || 1; });
+  pbDom.slider.addEventListener("input", () => {
+    seekPlayback(Number(pbDom.slider.value) * pb.duration, { pause: true });
+  });
+}
+
+async function loadTrajectoryFromUrl(url) {
+  try {
+    setStatus(`读取轨迹 ${url}`);
+    const data = await fetch(url, { cache: "no-store" }).then((res) => {
+      if (!res.ok) throw new Error(`${res.status}`);
+      return res.json();
+    });
+    setTrajectory(data);
+    setStatus(`轨迹已载入(${pb.duration.toFixed(2)}s, ${pb.samples.length} 帧)`);
+  } catch (error) {
+    setStatus(`轨迹载入失败：${error.message}(确认 run_pick 已导出 pick_trajectory.json)`);
+  }
+}
+
+function onPlaybackFile(event) {
+  const file = event.target.files && event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      setTrajectory(JSON.parse(String(reader.result)));
+      setStatus(`轨迹已载入：${file.name}(${pb.duration.toFixed(2)}s)`);
+    } catch (error) {
+      setStatus(`轨迹解析失败：${error.message}`);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function setTrajectory(traj) {
+  if (!traj || !Array.isArray(traj.samples) || !Array.isArray(traj.joint_names)) {
+    throw new Error("轨迹格式不正确(缺少 samples / joint_names)");
+  }
+  stopPlayback();
+  // Stop live auto-refresh so it doesn't fight the playback.
+  if (dom.autoRefresh && dom.autoRefresh.checked) {
+    dom.autoRefresh.checked = false;
+    applyAutoRefresh();
+  }
+  pb.traj = traj;
+  pb.jointNames = traj.joint_names.slice();
+  pb.samples = traj.samples.map((s) => ({ t: Number(s.t) || 0, phase: s.phase || "", q: s.q }));
+  pb.samples.sort((a, b) => a.t - b.t);
+  pb.times = pb.samples.map((s) => s.t);
+  pb.events = Array.isArray(traj.events) ? traj.events.slice() : [];
+  pb.duration = Number(traj.duration_s) || (pb.times.length ? pb.times[pb.times.length - 1] : 0);
+  pb.t = 0;
+
+  pbDom.play.disabled = false;
+  pbDom.restart.disabled = false;
+  pbDom.slider.disabled = false;
+  pbDom.play.textContent = "播放";
+
+  drawPlannedScene(traj.meta || {});
+  renderPlaybackFrame(0);
+}
+
+function torsoToWorld() {
+  const torso = getLinkWorldTransform("torso_link");
+  const pos = torso?.position?.clone() || new THREE.Vector3();
+  const quat = torso?.quaternion || new THREE.Quaternion();
+  return {
+    point: (m) => pos.clone().add(new THREE.Vector3(m[0], m[1], m[2]).applyQuaternion(quat)),
+    dir: (v) => new THREE.Vector3(v[0], v[1], v[2]).applyQuaternion(quat).normalize(),
+    quat,
+  };
+}
+
+function drawPlannedScene(meta) {
+  planGroup.clear();
+  if (!meta || !Array.isArray(meta.box_center_base)) return;
+  const tf = torsoToWorld();
+
+  const dims = Array.isArray(meta.box_dims_m) ? meta.box_dims_m : [0.16, 0.09];
+  const longSide = Math.max(dims[0], dims[1]);
+  const shortSide = Math.min(dims[0], dims[1]);
+  const thickness = 0.02;
+
+  // Box pose: x = long axis, z = top normal, y = z x x (in torso frame).
+  const center = tf.point(meta.box_center_base);
+  let quat = new THREE.Quaternion();
+  if (Array.isArray(meta.box_long_axis_base) && Array.isArray(meta.box_normal_base)) {
+    const x = new THREE.Vector3(...meta.box_long_axis_base).normalize();
+    const z = new THREE.Vector3(...meta.box_normal_base).normalize();
+    const y = new THREE.Vector3().crossVectors(z, x).normalize();
+    z.crossVectors(x, y).normalize();
+    const m = new THREE.Matrix4().makeBasis(x, y, z);
+    quat = tf.quat.clone().multiply(new THREE.Quaternion().setFromRotationMatrix(m));
+  }
+  const boxGroup = new THREE.Group();
+  boxGroup.position.copy(center);
+  boxGroup.quaternion.copy(quat);
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(longSide, shortSide, thickness),
+    new THREE.MeshStandardMaterial({ color: 0xd8aa39, roughness: 0.58, transparent: true, opacity: 0.55 }),
+  );
+  body.position.z = -thickness / 2;
+  boxGroup.add(body);
+  boxGroup.add(new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.BoxGeometry(longSide, shortSide, thickness)),
+    new THREE.LineBasicMaterial({ color: 0x4fd8ff }),
+  ).translateZ(-thickness / 2));
+  planGroup.add(boxGroup);
+
+  const mark = (arr, color, label) => {
+    if (!Array.isArray(arr)) return;
+    addPointMarker(planGroup, tf.point(arr), color, label);
+  };
+  mark(meta.pregrasp_pos, 0x4fd8ff, "pregrasp");
+  mark(meta.grasp_pos, 0x35d477, "grasp");
+  mark(meta.lift_pos, 0xffa64d, "lift");
+
+  if (Array.isArray(meta.target_axis_base) && Array.isArray(meta.grasp_pos)) {
+    const origin = tf.point(meta.grasp_pos).add(tf.dir(meta.target_axis_base).multiplyScalar(-0.12));
+    planGroup.add(new THREE.ArrowHelper(tf.dir(meta.target_axis_base), origin, 0.12, 0x35d477, 0.03, 0.02));
+  }
+}
+
+function indexAtTime(t) {
+  const times = pb.times;
+  if (!times.length) return -1;
+  let lo = 0;
+  let hi = times.length - 1;
+  if (t <= times[0]) return 0;
+  if (t >= times[hi]) return hi;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (times[mid] <= t) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+function renderPlaybackFrame(t) {
+  if (!pb.samples.length) return;
+  const idx = indexAtTime(t);
+  const sample = pb.samples[idx];
+  const armJoints = {};
+  for (let i = 0; i < pb.jointNames.length; i += 1) {
+    armJoints[pb.jointNames[i]] = Number(sample.q[i]);
+  }
+  applyJointState({ ...lastJointState, ...armJoints });
+
+  pbDom.slider.value = pb.duration > 0 ? String(t / pb.duration) : "0";
+  pbDom.time.textContent = `${t.toFixed(2)} / ${pb.duration.toFixed(2)} s`;
+  pbDom.phase.textContent = sample.phase || "-";
+
+  let suctionOn = false;
+  for (const ev of pb.events) {
+    if (Number(ev.t) <= t) {
+      if (ev.type === "suction_on") suctionOn = true;
+      else if (ev.type === "suction_off") suctionOn = false;
+    }
+  }
+  pbDom.suction.textContent = suctionOn ? "吸 (ON)" : "松 (OFF)";
+  pbDom.suction.style.color = suctionOn ? "#35d477" : "#9fb8c8";
+}
+
+function togglePlay() {
+  if (!pb.samples.length) return;
+  if (pb.playing) {
+    stopPlayback();
+  } else {
+    if (pb.t >= pb.duration - 1e-6) pb.t = 0;
+    pb.playing = true;
+    pb.lastWall = performance.now();
+    pbDom.play.textContent = "暂停";
+    pb.raf = requestAnimationFrame(playbackTick);
+  }
+}
+
+function stopPlayback() {
+  pb.playing = false;
+  if (pb.raf) cancelAnimationFrame(pb.raf);
+  pb.raf = 0;
+  if (pbDom.play) pbDom.play.textContent = "播放";
+}
+
+function seekPlayback(t, { pause = false } = {}) {
+  pb.t = Math.max(0, Math.min(pb.duration, t));
+  if (pause) stopPlayback();
+  renderPlaybackFrame(pb.t);
+}
+
+function playbackTick(now) {
+  if (!pb.playing) return;
+  const dt = Math.max(0, (now - pb.lastWall) / 1000) * pb.speed;
+  pb.lastWall = now;
+  pb.t += dt;
+  if (pb.t >= pb.duration) {
+    pb.t = pb.duration;
+    renderPlaybackFrame(pb.t);
+    stopPlayback();
+    return;
+  }
+  renderPlaybackFrame(pb.t);
+  pb.raf = requestAnimationFrame(playbackTick);
+}
+
+// ---------------------------------------------------------------------------
+// Front-end pick control: 识别烟盒 / 模拟执行 / 真机执行.
+// These call the visualizer server's POST /api/plan and /api/execute, which run
+// our pick pipeline (perceive -> plan -> export | execute).
+// ---------------------------------------------------------------------------
+const ARM_JOINT_ORDER = [
+  "right_shoulder_pitch_joint",
+  "right_shoulder_roll_joint",
+  "right_shoulder_yaw_joint",
+  "right_elbow_joint",
+  "right_wrist_roll_joint",
+  "right_wrist_pitch_joint",
+  "right_wrist_yaw_joint",
+];
+
+const pickDom = {
+  panel: document.querySelector("#pickPanel"),
+  detect: document.querySelector("#pkDetect"),
+  sim: document.querySelector("#pkSim"),
+  run: document.querySelector("#pkRun"),
+  status: document.querySelector("#pickStatus"),
+};
+
+if (pickDom.panel) {
+  pickDom.detect.addEventListener("click", detectBox);
+  pickDom.sim.addEventListener("click", simulateExecute);
+  pickDom.run.addEventListener("click", realExecute);
+}
+
+function setPickStatus(text) {
+  if (pickDom.status) pickDom.status.textContent = text;
+}
+
+function setPickBusy(busy) {
+  for (const btn of [pickDom.detect, pickDom.sim, pickDom.run]) {
+    if (btn) btn.disabled = busy;
+  }
+}
+
+function getCurrentArmJoints() {
+  const out = [];
+  for (const name of ARM_JOINT_ORDER) {
+    const value = lastJointState[name];
+    if (!Number.isFinite(value)) return null;
+    out.push(Number(value));
+  }
+  return out;
+}
+
+function pickPayload() {
+  const payload = {};
+  if (dom.labelSelect.value) payload.label = dom.labelSelect.value;
+  const q = getCurrentArmJoints();
+  if (q) payload.q_current = q;
+  return payload;
+}
+
+async function postPick(path, payload) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+  if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+async function detectBox() {
+  setPickBusy(true);
+  setPickStatus("识别中…");
+  try {
+    const ok = await refreshSceneData({ fallbackToSample: false, silent: true });
+    setPickStatus(ok ? "识别完成,已显示烟盒" : "识别失败:检查 YOLO(18081)");
+  } catch (error) {
+    setPickStatus(`识别失败：${error.message}`);
+  } finally {
+    setPickBusy(false);
+  }
+}
+
+async function simulateExecute() {
+  setPickBusy(true);
+  setPickStatus("规划中(感知 + IK)…");
+  try {
+    const data = await postPick("/api/plan", pickPayload());
+    setTrajectory(data.trajectory);
+    setPickStatus(`规划完成(种子:${data.seed_source}),开始回放`);
+    if (!pb.playing) togglePlay();
+  } catch (error) {
+    setPickStatus(`模拟失败：${error.message}`);
+  } finally {
+    setPickBusy(false);
+  }
+}
+
+async function realExecute() {
+  const confirmed = window.confirm(
+    "真机执行:机械臂将真实运动并启动吸盘。\n请确认周围安全、急停可达。是否继续?",
+  );
+  if (!confirmed) {
+    setPickStatus("已取消真机执行");
+    return;
+  }
+  setPickBusy(true);
+  setPickStatus("真机执行中…运动期间请勿操作(完成后才会返回)");
+  try {
+    const data = await postPick("/api/execute", pickPayload());
+    if (data.trajectory) setTrajectory(data.trajectory);
+    setPickStatus("真机执行完成");
+  } catch (error) {
+    setPickStatus(`真机执行失败：${error.message}`);
+  } finally {
+    setPickBusy(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ready pose: capture the current arm configuration as a table-safe waypoint.
+// Operator lifts the arm to a good standoff over the table, a helper clicks 保存,
+// and the server persists the 7 right-arm joints to pick/ready_pose.json.
+// ---------------------------------------------------------------------------
+const readyDom = {
+  panel: document.querySelector("#readyPanel"),
+  save: document.querySelector("#rpSave"),
+  load: document.querySelector("#rpLoad"),
+  status: document.querySelector("#readyStatus"),
+};
+
+if (readyDom.panel) {
+  readyDom.save.addEventListener("click", saveReadyPose);
+  readyDom.load.addEventListener("click", loadReadyPose);
+}
+
+function setReadyStatus(text) {
+  if (readyDom.status) readyDom.status.textContent = text;
+}
+
+function formatJoints(q) {
+  if (!Array.isArray(q)) return "-";
+  return `[${q.map((v) => Number(v).toFixed(3)).join(", ")}]`;
+}
+
+async function saveReadyPose() {
+  if (readyDom.save) readyDom.save.disabled = true;
+  setReadyStatus("保存中…");
+  try {
+    const payload = { all_joints: { ...lastJointState } };
+    const q = getCurrentArmJoints();
+    if (q) payload.q_current = q;
+    const col = Number(dom.columnExtensionMm?.value);
+    if (Number.isFinite(col)) payload.column_extension_mm = col;
+    const data = await postPick("/api/save_ready_pose", payload);
+    setReadyStatus(`已保存预备位姿(来源:${data.source}) q=${formatJoints(data.q)}`);
+  } catch (error) {
+    setReadyStatus(`保存失败：${error.message}`);
+  } finally {
+    if (readyDom.save) readyDom.save.disabled = false;
+  }
+}
+
+async function loadReadyPose() {
+  setReadyStatus("读取已存预备位姿…");
+  try {
+    const res = await fetch("/api/ready_pose", { cache: "no-store" });
+    const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+    if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    setReadyStatus(`已存预备位姿(${data.saved_at}) q=${formatJoints(data.q)}`);
+  } catch (error) {
+    setReadyStatus(`读取失败：${error.message}`);
+  }
 }
