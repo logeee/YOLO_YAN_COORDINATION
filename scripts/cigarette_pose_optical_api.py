@@ -369,6 +369,7 @@ def _stereo_plane_block(
         "depth_mm": plane["center_depth_mm"],
         "range_from_left_camera_mm": range_mm,
         "direction_unit_xyz": _direction_unit(center) if range_mm > 1e-6 else [0.0, 0.0, 0.0],
+        "corner_xyz_mm": plane.get("corner_xyz_mm"),
         "top_plane_normal_xyz": normal,
         "top_plane_camera_to_vertical_deg": round(_camera_to_vertical_deg_from_up_unit(normal), 3),
         "long_axis_unit_xyz": plane["long_axis_unit_xyz"],

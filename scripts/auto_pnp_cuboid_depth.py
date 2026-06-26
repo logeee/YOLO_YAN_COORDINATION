@@ -676,16 +676,28 @@ def stereo_feature_plane(
     if float(np.dot(normal, plane_pt)) > 0.0:
         normal = -normal
 
-    # Center = intersection of the quad-centroid viewing ray with the plane.
-    centroid_px = quad.mean(axis=0).reshape(1, 1, 2)
-    cen_norm = cv2.undistortPoints(centroid_px.astype(np.float64), k_left, dist_l).reshape(2)
-    ray = np.asarray([cen_norm[0], cen_norm[1], 1.0], dtype=np.float64)
+    # Center = average of the four top-face corner rays intersected with the
+    # fitted plane, computed in 3D. Averaging the 2D corner centroid instead
+    # would pull the center toward the optical axis under perspective
+    # foreshortening of a tilted face (an X underestimate); averaging in 3D is
+    # unbiased, while depth still comes from the robust plane (not per-corner
+    # disparity), so it stays stable.
     plane_d = float(np.dot(normal, plane_pt))
-    denom = float(np.dot(normal, ray))
-    if abs(denom) < 1e-9:
-        center = inliers.mean(axis=0)
+    corner_norm = cv2.undistortPoints(quad.reshape(-1, 1, 2).astype(np.float64), k_left, dist_l).reshape(-1, 2)
+    plane_corners: list[np.ndarray] = []
+    for nx, ny in corner_norm:
+        ray = np.asarray([nx, ny, 1.0], dtype=np.float64)
+        denom = float(np.dot(normal, ray))
+        if abs(denom) < 1e-9:
+            plane_corners = []
+            break
+        plane_corners.append((plane_d / denom) * ray)
+    if plane_corners:
+        plane_corner_arr = np.asarray(plane_corners)
+        center = plane_corner_arr.mean(axis=0)
     else:
-        center = (plane_d / denom) * ray
+        plane_corner_arr = None
+        center = inliers.mean(axis=0)
 
     # In-plane long axis via PCA of the inlier cloud.
     centered = inliers - inliers.mean(axis=0)
@@ -695,6 +707,9 @@ def stereo_feature_plane(
     return {
         "center_xyz_mm": [round(float(v), 1) for v in center],
         "center_depth_mm": round(float(center[2]), 1),
+        "corner_xyz_mm": (
+            [[round(float(v), 1) for v in row] for row in plane_corner_arr] if plane_corner_arr is not None else None
+        ),
         "top_plane_normal_xyz": [round(float(v), 6) for v in normal],
         "long_axis_unit_xyz": [round(float(v), 6) for v in long_axis],
         "num_features": int(len(pts_left)),
