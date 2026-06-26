@@ -1102,6 +1102,7 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         "intrinsics_assumption": result.get("intrinsics_assumption"),
         "intrinsics_assumption_right": result.get("intrinsics_assumption_right"),
+        "left": result.get("left"),
         "right": result.get("right"),
         "stereo": result.get("stereo"),
         "stereo_plane": result.get("stereo_plane"),

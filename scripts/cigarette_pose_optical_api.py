@@ -2123,6 +2123,12 @@ def run_pose(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "box_head_one_third_above": box_head_one_third_above,
         "intrinsics_assumption": _intrinsics_assumption(config),
         "intrinsics_assumption_right": _intrinsics_assumption_right(config),
+        "left": {
+            "available": True,
+            "method": "mono_pnp",
+            "frame": "left_camera_optical",
+            "center_xyz_mm": selected_left["center_xyz_mm"],
+        },
         "right": _right_pose_block(selected_right, selected_orientation, config) if selected_right is not None else None,
         "stereo": _stereo_block_result,
         "stereo_plane": _stereo_plane_block_result,
