@@ -404,12 +404,16 @@ def solve_depth(
     cx: float,
     cy: float,
     fy_px: float | None = None,
+    dist_coeffs: Any | None = None,
 ) -> dict[str, Any]:
     obj = object_points(width_m, height_m)
     fx_px = float(focal_px)
     fy_px = float(fy_px if fy_px is not None else focal_px)
     k = np.asarray([[fx_px, 0.0, cx], [0.0, fy_px, cy], [0.0, 0.0, 1.0]], dtype=np.float64)
-    dist = np.zeros((5, 1), dtype=np.float64)
+    if dist_coeffs is None:
+        dist = np.zeros((5, 1), dtype=np.float64)
+    else:
+        dist = np.asarray(dist_coeffs, dtype=np.float64).reshape(-1, 1)
     ok, rvec, tvec = cv2.solvePnP(obj, points.astype(np.float64), k, dist, flags=cv2.SOLVEPNP_IPPE)
     if not ok:
         raise RuntimeError("solvePnP failed")
@@ -425,6 +429,297 @@ def solve_depth(
         "corner_xyz_m": corner_xyz.tolist(),
         "object_points_m": obj.tolist(),
         "mean_reprojection_px": reproj,
+    }
+
+
+def triangulate_stereo_quad(
+    left_points: np.ndarray,
+    right_points: np.ndarray,
+    k_left: np.ndarray,
+    dist_left: Any,
+    k_right: np.ndarray,
+    dist_right: Any,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+) -> dict[str, Any]:
+    """Triangulate matched left/right quad corners into the LEFT camera frame.
+
+    left_points/right_points are 4x2 pixel coordinates in the *same* corner
+    order. rotation (3x3) and translation (3,) are the stereo extrinsics from
+    cv2.stereoCalibrate, i.e. X_right = rotation @ X_left + translation, with
+    translation in millimetres. Returned 3D points are in the left camera
+    OpenCV frame (+X right, +Y down, +Z forward), in millimetres.
+    """
+    left = np.asarray(left_points, dtype=np.float64).reshape(-1, 1, 2)
+    right = np.asarray(right_points, dtype=np.float64).reshape(-1, 1, 2)
+    k_left = np.asarray(k_left, dtype=np.float64).reshape(3, 3)
+    k_right = np.asarray(k_right, dtype=np.float64).reshape(3, 3)
+    dist_l = np.asarray(dist_left, dtype=np.float64).reshape(-1, 1) if dist_left is not None else None
+    dist_r = np.asarray(dist_right, dtype=np.float64).reshape(-1, 1) if dist_right is not None else None
+    rotation = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+    translation = np.asarray(translation, dtype=np.float64).reshape(3, 1)
+
+    # Undistort to normalized image coordinates so triangulation works in the
+    # metric left-camera frame with P_left = [I|0], P_right = [R|T].
+    norm_left = cv2.undistortPoints(left, k_left, dist_l).reshape(-1, 2)
+    norm_right = cv2.undistortPoints(right, k_right, dist_r).reshape(-1, 2)
+    p_left = np.hstack([np.eye(3), np.zeros((3, 1))])
+    p_right = np.hstack([rotation, translation])
+    homog = cv2.triangulatePoints(p_left, p_right, norm_left.T, norm_right.T)
+    corners = (homog[:3] / homog[3]).T  # 4x3, left camera frame, mm
+
+    # Reproject to both views to obtain a stereo consistency (reprojection) error.
+    rvec_left = np.zeros((3, 1), dtype=np.float64)
+    tvec_left = np.zeros((3, 1), dtype=np.float64)
+    proj_left, _ = cv2.projectPoints(corners, rvec_left, tvec_left, k_left, dist_l)
+    rvec_right, _ = cv2.Rodrigues(rotation)
+    proj_right, _ = cv2.projectPoints(corners, rvec_right, translation, k_right, dist_r)
+    err_left = np.linalg.norm(proj_left.reshape(-1, 2) - left.reshape(-1, 2), axis=1)
+    err_right = np.linalg.norm(proj_right.reshape(-1, 2) - right.reshape(-1, 2), axis=1)
+    reproj_px = float(np.concatenate([err_left, err_right]).mean())
+
+    center = corners.mean(axis=0)
+
+    # Fit the top-face plane normal via SVD of the centered corners; orient it
+    # back toward the camera (negative depth direction).
+    centered = corners - center
+    _, _, vh = np.linalg.svd(centered)
+    normal = vh[2]
+    if float(np.dot(normal, center)) > 0.0:
+        normal = -normal
+    normal = normal / (np.linalg.norm(normal) + 1e-12)
+
+    # Measured top-face edge lengths (corner order TL,TR,BR,BL).
+    edge_tl_tr = float(np.linalg.norm(corners[1] - corners[0]))
+    edge_tr_br = float(np.linalg.norm(corners[2] - corners[1]))
+    edge_br_bl = float(np.linalg.norm(corners[3] - corners[2]))
+    edge_bl_tl = float(np.linalg.norm(corners[0] - corners[3]))
+    side_a = 0.5 * (edge_tl_tr + edge_br_bl)
+    side_b = 0.5 * (edge_tr_br + edge_bl_tl)
+    long_mm = max(side_a, side_b)
+    short_mm = min(side_a, side_b)
+
+    return {
+        "corner_xyz_mm": [[round(float(v), 1) for v in row] for row in corners],
+        "center_xyz_mm": [round(float(v), 1) for v in center],
+        "center_depth_mm": round(float(center[2]), 1),
+        "top_plane_normal_xyz": [round(float(v), 6) for v in normal],
+        "measured_top_size_mm": [round(long_mm, 1), round(short_mm, 1)],
+        "corner_depth_range_mm": [round(float(corners[:, 2].min()), 1), round(float(corners[:, 2].max()), 1)],
+        "stereo_reprojection_error_px": round(reproj_px, 3),
+        "baseline_mm": round(float(np.linalg.norm(translation)), 2),
+    }
+
+
+def _skew(vec: np.ndarray) -> np.ndarray:
+    x, y, z = float(vec[0]), float(vec[1]), float(vec[2])
+    return np.asarray([[0.0, -z, y], [z, 0.0, -x], [-y, x, 0.0]], dtype=np.float64)
+
+
+def _ransac_plane(
+    points: np.ndarray,
+    thresh_mm: float = 2.0,
+    iters: int = 200,
+    seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float] | None:
+    """Robustly fit a plane to a 3D point cloud.
+
+    Returns (unit_normal, point_on_plane, inlier_mask, inlier_rms_mm) or None.
+    """
+    points = np.asarray(points, dtype=np.float64)
+    n = len(points)
+    if n < 3:
+        return None
+    rng = np.random.default_rng(seed)
+    best_mask: np.ndarray | None = None
+    best_count = 0
+    for _ in range(int(iters)):
+        idx = rng.choice(n, 3, replace=False)
+        trio = points[idx]
+        normal = np.cross(trio[1] - trio[0], trio[2] - trio[0])
+        norm = np.linalg.norm(normal)
+        if norm < 1e-9:
+            continue
+        normal = normal / norm
+        offset = float(np.dot(normal, trio[0]))
+        dist = np.abs(points @ normal - offset)
+        mask = dist < thresh_mm
+        count = int(mask.sum())
+        if count > best_count:
+            best_count = count
+            best_mask = mask
+    if best_mask is None or best_count < 3:
+        return None
+    inliers = points[best_mask]
+    centroid = inliers.mean(axis=0)
+    _, _, vh = np.linalg.svd(inliers - centroid)
+    normal = vh[2] / (np.linalg.norm(vh[2]) + 1e-12)
+    offset = float(np.dot(normal, centroid))
+    rms = float(np.sqrt(np.mean((inliers @ normal - offset) ** 2)))
+    return normal, centroid, best_mask, rms
+
+
+def stereo_feature_plane(
+    left_image: np.ndarray,
+    right_image: np.ndarray,
+    left_quad: np.ndarray,
+    k_left: np.ndarray,
+    dist_left: Any,
+    k_right: np.ndarray,
+    dist_right: Any,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+    max_features: int = 300,
+    mask_erode_px: int = 4,
+    epipolar_max_px: float = 1.5,
+    fb_max_px: float = 1.0,
+    ransac_thresh_mm: float = 2.0,
+    min_inliers: int = 8,
+) -> dict[str, Any] | None:
+    """Estimate the top-face plane pose from sparse stereo feature matches.
+
+    Independent of the corner-based triangulation: detects texture features
+    inside the left top-face polygon, matches them to the right image with LK
+    optical flow, rejects outliers via forward-backward and epipolar checks,
+    triangulates the survivors, and RANSAC-fits a plane. The center is the
+    intersection of the quad-centroid viewing ray with that plane, so depth no
+    longer depends on individual corner localization. All 3D output is in the
+    left camera optical frame (mm). Returns None when there is too little
+    texture or too few consistent matches (caller then keeps other methods).
+    """
+    if left_image is None or right_image is None or left_quad is None:
+        return None
+    k_left = np.asarray(k_left, dtype=np.float64).reshape(3, 3)
+    k_right = np.asarray(k_right, dtype=np.float64).reshape(3, 3)
+    dist_l = np.asarray(dist_left, dtype=np.float64).reshape(-1, 1) if dist_left is not None else None
+    dist_r = np.asarray(dist_right, dtype=np.float64).reshape(-1, 1) if dist_right is not None else None
+    rotation = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+    translation = np.asarray(translation, dtype=np.float64).reshape(3)
+    quad = np.asarray(left_quad, dtype=np.float64).reshape(-1, 2)
+
+    gray_left = cv2.cvtColor(left_image, cv2.COLOR_BGR2GRAY) if left_image.ndim == 3 else left_image
+    gray_right = cv2.cvtColor(right_image, cv2.COLOR_BGR2GRAY) if right_image.ndim == 3 else right_image
+
+    # Gate features to the detected top face only (mask, not bbox), eroded to
+    # keep clear of the jittery boundary.
+    mask = np.zeros(gray_left.shape[:2], dtype=np.uint8)
+    cv2.fillPoly(mask, [quad.astype(np.int32)], 255)
+    if mask_erode_px > 0:
+        mask = cv2.erode(mask, np.ones((mask_erode_px, mask_erode_px), np.uint8), iterations=1)
+    if int(mask.sum()) <= 0:
+        return None
+
+    feats = cv2.goodFeaturesToTrack(
+        gray_left, maxCorners=int(max_features), qualityLevel=0.01, minDistance=4, mask=mask
+    )
+    if feats is None or len(feats) < min_inliers:
+        return None
+    feats = feats.astype(np.float32)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+    cv2.cornerSubPix(gray_left, feats, (5, 5), (-1, -1), criteria)
+
+    lk_params = dict(winSize=(21, 21), maxLevel=3, criteria=criteria)
+    fwd, st_fwd, _ = cv2.calcOpticalFlowPyrLK(gray_left, gray_right, feats, None, **lk_params)
+    if fwd is None:
+        return None
+    back, st_back, _ = cv2.calcOpticalFlowPyrLK(gray_right, gray_left, fwd, None, **lk_params)
+    if back is None:
+        return None
+
+    pts_left = feats.reshape(-1, 2)
+    pts_right = fwd.reshape(-1, 2)
+    fb_err = np.linalg.norm(pts_left - back.reshape(-1, 2), axis=1)
+    status = (st_fwd.reshape(-1) == 1) & (st_back.reshape(-1) == 1) & (fb_err < fb_max_px)
+
+    # Epipolar consistency via the fundamental matrix derived from calibration.
+    essential = _skew(translation) @ rotation
+    fmat = np.linalg.inv(k_right).T @ essential @ np.linalg.inv(k_left)
+    ones = np.ones((len(pts_left), 1))
+    hl = np.hstack([pts_left, ones])
+    hr = np.hstack([pts_right, ones])
+    lines_r = (fmat @ hl.T).T  # epiline in right image for each left point
+    denom_r = np.sqrt(lines_r[:, 0] ** 2 + lines_r[:, 1] ** 2) + 1e-12
+    epi_r = np.abs(np.sum(lines_r * hr, axis=1)) / denom_r
+    lines_l = (fmat.T @ hr.T).T
+    denom_l = np.sqrt(lines_l[:, 0] ** 2 + lines_l[:, 1] ** 2) + 1e-12
+    epi_l = np.abs(np.sum(lines_l * hl, axis=1)) / denom_l
+    epi_err = 0.5 * (epi_r + epi_l)
+    status = status & (epi_err < epipolar_max_px)
+
+    if int(status.sum()) < min_inliers:
+        return None
+    match_left = pts_left[status]
+    match_right = pts_right[status]
+
+    norm_left = cv2.undistortPoints(match_left.reshape(-1, 1, 2), k_left, dist_l).reshape(-1, 2)
+    norm_right = cv2.undistortPoints(match_right.reshape(-1, 1, 2), k_right, dist_r).reshape(-1, 2)
+    p_left = np.hstack([np.eye(3), np.zeros((3, 1))])
+    p_right = np.hstack([rotation, translation.reshape(3, 1)])
+    homog = cv2.triangulatePoints(p_left, p_right, norm_left.T, norm_right.T)
+    cloud = (homog[:3] / homog[3]).T  # Nx3 in left frame, mm
+
+    # Keep points in front of the camera and within a sane depth window.
+    valid = cloud[:, 2] > 1.0
+    cloud = cloud[valid]
+    if len(cloud) < min_inliers:
+        return None
+
+    fit = _ransac_plane(cloud, thresh_mm=ransac_thresh_mm, iters=200)
+    if fit is None:
+        return None
+    normal, plane_pt, inlier_mask, rms = fit
+    if int(inlier_mask.sum()) < min_inliers:
+        return None
+    inliers = cloud[inlier_mask]
+
+    # Orient normal toward the camera (top face seen from the front).
+    if float(np.dot(normal, plane_pt)) > 0.0:
+        normal = -normal
+
+    # Center = average of the four top-face corner rays intersected with the
+    # fitted plane, computed in 3D. Averaging the 2D corner centroid instead
+    # would pull the center toward the optical axis under perspective
+    # foreshortening of a tilted face (an X underestimate); averaging in 3D is
+    # unbiased, while depth still comes from the robust plane (not per-corner
+    # disparity), so it stays stable.
+    plane_d = float(np.dot(normal, plane_pt))
+    corner_norm = cv2.undistortPoints(quad.reshape(-1, 1, 2).astype(np.float64), k_left, dist_l).reshape(-1, 2)
+    plane_corners: list[np.ndarray] = []
+    for nx, ny in corner_norm:
+        ray = np.asarray([nx, ny, 1.0], dtype=np.float64)
+        denom = float(np.dot(normal, ray))
+        if abs(denom) < 1e-9:
+            plane_corners = []
+            break
+        plane_corners.append((plane_d / denom) * ray)
+    if plane_corners:
+        plane_corner_arr = np.asarray(plane_corners)
+        center = plane_corner_arr.mean(axis=0)
+    else:
+        plane_corner_arr = None
+        center = inliers.mean(axis=0)
+
+    # In-plane long axis via PCA of the inlier cloud.
+    centered = inliers - inliers.mean(axis=0)
+    _, _, vh = np.linalg.svd(centered)
+    long_axis = vh[0] / (np.linalg.norm(vh[0]) + 1e-12)
+
+    return {
+        "center_xyz_mm": [round(float(v), 1) for v in center],
+        "center_depth_mm": round(float(center[2]), 1),
+        "corner_xyz_mm": (
+            [[round(float(v), 1) for v in row] for row in plane_corner_arr] if plane_corner_arr is not None else None
+        ),
+        "top_plane_normal_xyz": [round(float(v), 6) for v in normal],
+        "long_axis_unit_xyz": [round(float(v), 6) for v in long_axis],
+        "num_features": int(len(pts_left)),
+        "num_matches": int(status.sum()),
+        "num_inliers": int(inlier_mask.sum()),
+        "inlier_ratio": round(float(inlier_mask.sum()) / float(len(pts_left)), 3),
+        "plane_rms_mm": round(float(rms), 3),
+        "epipolar_rms_px": round(float(np.sqrt(np.mean(epi_err[status] ** 2))), 3),
+        "baseline_mm": round(float(np.linalg.norm(translation)), 2),
+        "inlier_depth_range_mm": [round(float(inliers[:, 2].min()), 1), round(float(inliers[:, 2].max()), 1)],
     }
 
 

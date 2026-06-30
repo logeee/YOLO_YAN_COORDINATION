@@ -31,7 +31,13 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from cigarette_pose_optical_api import YOLO_CLASS_TOP_SIZES_M, build_arg_parser, run_pose  # noqa: E402
+from cigarette_pose_optical_api import (  # noqa: E402
+    YOLO_CLASS_TOP_SIZES_M,
+    build_arg_parser,
+    parse_dist_coeffs,
+    parse_float_list,
+    run_pose,
+)
 from yolo_topface_detector import (  # noqa: E402
     YOLO_MODEL_CACHE,
     _ensure_torchvision_nms,
@@ -56,6 +62,14 @@ class ServerConfig:
     fy: float | None = None
     cx: float = 320.0
     cy: float = 240.0
+    dist_coeffs: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0)
+    fx_right: float | None = None
+    fy_right: float | None = None
+    cx_right: float | None = None
+    cy_right: float | None = None
+    dist_coeffs_right: tuple[float, ...] | None = None
+    stereo_R: tuple[float, ...] | None = None
+    stereo_T: tuple[float, ...] | None = None
     runtime_config_path: Path = Path("config/cigarette_pose_runtime.json")
     warmup: bool = True
 
@@ -63,6 +77,8 @@ class ServerConfig:
 POSE_LOCK = threading.Lock()
 RUNTIME_CONFIG_LOCK = threading.Lock()
 RUNTIME_INTRINSICS: dict[str, float] | None = None
+RUNTIME_INTRINSICS_RIGHT: dict[str, Any] | None = None
+RUNTIME_STEREO: dict[str, Any] | None = None
 RUNTIME_OBJECT_SIZES_MM: dict[str, dict[str, float]] | None = None
 REQUEST_COUNTER = 0
 REQUEST_COUNTER_LOCK = threading.Lock()
@@ -116,6 +132,12 @@ OVERRIDE_TYPES: dict[str, type] = {
     "fy": float,
     "cx": float,
     "cy": float,
+    "dist_coeffs": list,
+    "fx_right": float,
+    "fy_right": float,
+    "cx_right": float,
+    "cy_right": float,
+    "dist_coeffs_right": list,
     "yolo_conf": float,
     "yolo_imgsz": int,
     "yolo_mask_threshold": float,
@@ -225,6 +247,8 @@ def _parse_bool(value: Any) -> bool:
 
 
 def _coerce_override(name: str, value: Any) -> Any:
+    if name in ("dist_coeffs", "dist_coeffs_right"):
+        return list(parse_dist_coeffs(value))
     target_type = OVERRIDE_TYPES[name]
     if target_type is bool:
         return _parse_bool(value)
@@ -260,18 +284,26 @@ def _server_fy(config: ServerConfig) -> float:
     return float(config.fy if config.fy is not None else config.focal_px)
 
 
-def _server_intrinsics(config: ServerConfig) -> dict[str, float]:
+def _server_intrinsics(config: ServerConfig) -> dict[str, Any]:
     return {
         "focal_px": float(config.focal_px),
         "fx": _server_fx(config),
         "fy": _server_fy(config),
         "cx": float(config.cx),
         "cy": float(config.cy),
+        "dist_coeffs": [float(value) for value in config.dist_coeffs],
     }
 
 
-def _validate_intrinsics(values: dict[str, Any], base: dict[str, float] | None = None) -> dict[str, float]:
-    base_values = base or {"focal_px": 260.0, "fx": 260.0, "fy": 260.0, "cx": 320.0, "cy": 240.0}
+def _validate_intrinsics(values: dict[str, Any], base: dict[str, Any] | None = None) -> dict[str, Any]:
+    base_values = base or {
+        "focal_px": 260.0,
+        "fx": 260.0,
+        "fy": 260.0,
+        "cx": 320.0,
+        "cy": 240.0,
+        "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+    }
     focal_px = float(values.get("focal_px", base_values.get("focal_px", 260.0)))
     fx = float(values.get("fx", focal_px if "focal_px" in values else base_values.get("fx", focal_px)))
     fy = float(values.get("fy", focal_px if "focal_px" in values else base_values.get("fy", focal_px)))
@@ -279,12 +311,17 @@ def _validate_intrinsics(values: dict[str, Any], base: dict[str, float] | None =
     cy = float(values.get("cy", base_values.get("cy", 240.0)))
     if fx <= 0.0 or fy <= 0.0 or focal_px <= 0.0:
         raise ValueError("focal_px/fx/fy must be positive")
+    if "dist_coeffs" in values:
+        dist_coeffs = list(parse_dist_coeffs(values.get("dist_coeffs")))
+    else:
+        dist_coeffs = [float(value) for value in base_values.get("dist_coeffs", [0.0, 0.0, 0.0, 0.0, 0.0])]
     return {
         "focal_px": float(focal_px),
         "fx": float(fx),
         "fy": float(fy),
         "cx": float(cx),
         "cy": float(cy),
+        "dist_coeffs": dist_coeffs,
     }
 
 
@@ -307,10 +344,102 @@ def _effective_intrinsics(config: ServerConfig) -> dict[str, float]:
     return _server_intrinsics(config)
 
 
-def _request_intrinsics(config: ServerConfig, overrides: dict[str, Any]) -> dict[str, float]:
-    names = {"focal_px", "fx", "fy", "cx", "cy"}
+def _request_intrinsics(config: ServerConfig, overrides: dict[str, Any]) -> dict[str, Any]:
+    names = {"focal_px", "fx", "fy", "cx", "cy", "dist_coeffs"}
     values = {name: overrides[name] for name in names if name in overrides}
     return _validate_intrinsics(values, base=_effective_intrinsics(config))
+
+
+def _validate_intrinsics_right(values: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    fx = float(values.get("fx", base["fx"]))
+    fy = float(values.get("fy", base["fy"]))
+    cx = float(values.get("cx", base["cx"]))
+    cy = float(values.get("cy", base["cy"]))
+    if fx <= 0.0 or fy <= 0.0:
+        raise ValueError("right fx/fy must be positive")
+    if "dist_coeffs" in values:
+        dist_coeffs = list(parse_dist_coeffs(values.get("dist_coeffs")))
+    else:
+        dist_coeffs = [float(value) for value in base.get("dist_coeffs", [0.0, 0.0, 0.0, 0.0, 0.0])]
+    return {"fx": fx, "fy": fy, "cx": cx, "cy": cy, "dist_coeffs": dist_coeffs}
+
+
+def _server_intrinsics_right(config: ServerConfig) -> dict[str, Any]:
+    left = _effective_intrinsics(config)
+    return {
+        "fx": float(config.fx_right) if config.fx_right is not None else float(left["fx"]),
+        "fy": float(config.fy_right) if config.fy_right is not None else float(left["fy"]),
+        "cx": float(config.cx_right) if config.cx_right is not None else float(left["cx"]),
+        "cy": float(config.cy_right) if config.cy_right is not None else float(left["cy"]),
+        "dist_coeffs": (
+            [float(value) for value in config.dist_coeffs_right]
+            if config.dist_coeffs_right is not None
+            else [float(value) for value in left["dist_coeffs"]]
+        ),
+    }
+
+
+def _runtime_intrinsics_right() -> dict[str, Any] | None:
+    with RUNTIME_CONFIG_LOCK:
+        return dict(RUNTIME_INTRINSICS_RIGHT) if RUNTIME_INTRINSICS_RIGHT is not None else None
+
+
+def _effective_intrinsics_right(config: ServerConfig) -> dict[str, Any]:
+    runtime = _runtime_intrinsics_right()
+    if runtime is not None:
+        return runtime
+    return _server_intrinsics_right(config)
+
+
+def _request_intrinsics_right(config: ServerConfig, overrides: dict[str, Any]) -> dict[str, Any]:
+    mapping = {
+        "fx_right": "fx",
+        "fy_right": "fy",
+        "cx_right": "cx",
+        "cy_right": "cy",
+        "dist_coeffs_right": "dist_coeffs",
+    }
+    values = {dst: overrides[src] for src, dst in mapping.items() if src in overrides}
+    return _validate_intrinsics_right(values, base=_effective_intrinsics_right(config))
+
+
+def _validate_stereo(data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("stereo config must be a JSON object with R and T")
+    rotation = parse_float_list(data.get("R"), expected=9)
+    translation = parse_float_list(data.get("T"), expected=3)
+    if rotation is None or translation is None:
+        raise ValueError("stereo config requires R (9 numbers) and T (3 numbers)")
+    result: dict[str, Any] = {"R": list(rotation), "T": list(translation)}
+    baseline = data.get("baseline_mm")
+    if baseline is not None:
+        result["baseline_mm"] = float(baseline)
+    else:
+        result["baseline_mm"] = round(float(sum(value * value for value in translation) ** 0.5), 2)
+    return result
+
+
+def _server_stereo(config: ServerConfig) -> dict[str, Any] | None:
+    if config.stereo_R is None or config.stereo_T is None:
+        return None
+    translation = [float(value) for value in config.stereo_T]
+    return {
+        "R": [float(value) for value in config.stereo_R],
+        "T": translation,
+        "baseline_mm": round(float(sum(value * value for value in translation) ** 0.5), 2),
+    }
+
+
+def _runtime_stereo() -> dict[str, Any] | None:
+    with RUNTIME_CONFIG_LOCK:
+        return dict(RUNTIME_STEREO) if RUNTIME_STEREO is not None else None
+
+
+def _effective_stereo(config: ServerConfig) -> dict[str, Any] | None:
+    runtime = _runtime_stereo()
+    if runtime is not None:
+        return runtime
+    return _server_stereo(config)
 
 
 def _read_runtime_config_data(config: ServerConfig) -> dict[str, Any]:
@@ -441,6 +570,11 @@ def _runtime_config_payload(config: ServerConfig) -> dict[str, Any]:
         "startup_defaults": _server_intrinsics(config),
         "runtime_defaults": _runtime_intrinsics(),
         "effective_defaults": _effective_intrinsics(config),
+        "right_startup_defaults": _server_intrinsics_right(config),
+        "right_runtime_defaults": _runtime_intrinsics_right(),
+        "right_effective_defaults": _effective_intrinsics_right(config),
+        "stereo_effective": _effective_stereo(config),
+        "stereo_available": _effective_stereo(config) is not None,
         "object_sizes": _object_size_config_payload(config),
         "note": "pose/xyz/debug requests can still override these values with fx/fy/cx/cy query or JSON fields",
     }
@@ -452,7 +586,7 @@ def _load_runtime_intrinsics(config: ServerConfig) -> None:
         _apply_object_sizes_to_pnp(config)
         return
     raw_intrinsics = data.get("intrinsics")
-    if raw_intrinsics is None and any(name in data for name in ("focal_px", "fx", "fy", "cx", "cy")):
+    if raw_intrinsics is None and any(name in data for name in ("focal_px", "fx", "fy", "cx", "cy", "dist_coeffs")):
         raw_intrinsics = data
     values = None
     if raw_intrinsics is not None:
@@ -460,12 +594,28 @@ def _load_runtime_intrinsics(config: ServerConfig) -> None:
             raise ValueError(f"runtime intrinsics must be a JSON object: {config.runtime_config_path}")
         values = _validate_intrinsics(raw_intrinsics, base=_server_intrinsics(config))
 
+    raw_intrinsics_right = data.get("intrinsics_right")
+    values_right = None
+    if raw_intrinsics_right is not None:
+        if not isinstance(raw_intrinsics_right, dict):
+            raise ValueError(f"runtime intrinsics_right must be a JSON object: {config.runtime_config_path}")
+        values_right = _validate_intrinsics_right(raw_intrinsics_right, base=_server_intrinsics_right(config))
+
+    raw_stereo = data.get("stereo")
+    stereo_values = None
+    if raw_stereo is not None:
+        stereo_values = _validate_stereo(raw_stereo)
+
     raw_sizes = data.get("object_sizes")
     object_sizes = _validate_object_sizes(raw_sizes, base=_startup_object_sizes(config)) if raw_sizes is not None else None
     with RUNTIME_CONFIG_LOCK:
-        global RUNTIME_INTRINSICS, RUNTIME_OBJECT_SIZES_MM
+        global RUNTIME_INTRINSICS, RUNTIME_INTRINSICS_RIGHT, RUNTIME_STEREO, RUNTIME_OBJECT_SIZES_MM
         if values is not None:
             RUNTIME_INTRINSICS = values
+        if values_right is not None:
+            RUNTIME_INTRINSICS_RIGHT = values_right
+        if stereo_values is not None:
+            RUNTIME_STEREO = stereo_values
         if object_sizes is not None:
             RUNTIME_OBJECT_SIZES_MM = object_sizes
     _apply_object_sizes_to_pnp(config)
@@ -477,6 +627,24 @@ def _save_runtime_intrinsics(config: ServerConfig, intrinsics: dict[str, float])
     with RUNTIME_CONFIG_LOCK:
         global RUNTIME_INTRINSICS
         RUNTIME_INTRINSICS = dict(intrinsics)
+    _write_runtime_config_data(config, payload)
+
+
+def _save_runtime_intrinsics_right(config: ServerConfig, intrinsics_right: dict[str, Any]) -> None:
+    payload = _read_runtime_config_data(config)
+    payload["intrinsics_right"] = intrinsics_right
+    with RUNTIME_CONFIG_LOCK:
+        global RUNTIME_INTRINSICS_RIGHT
+        RUNTIME_INTRINSICS_RIGHT = dict(intrinsics_right)
+    _write_runtime_config_data(config, payload)
+
+
+def _save_runtime_stereo(config: ServerConfig, stereo: dict[str, Any]) -> None:
+    payload = _read_runtime_config_data(config)
+    payload["stereo"] = stereo
+    with RUNTIME_CONFIG_LOCK:
+        global RUNTIME_STEREO
+        RUNTIME_STEREO = dict(stereo)
     _write_runtime_config_data(config, payload)
 
 
@@ -495,13 +663,58 @@ def _serve_intrinsics_config(handler: BaseHTTPRequestHandler, config: ServerConf
         _json_response(handler, 200, _runtime_config_payload(config))
         return
     overrides = _request_overrides(handler)
-    names = {"focal_px", "fx", "fy", "cx", "cy"}
+    names = {"focal_px", "fx", "fy", "cx", "cy", "dist_coeffs"}
     values = {name: overrides[name] for name in names if name in overrides}
     if not values:
-        _json_response(handler, 400, {"ok": False, "error": "provide at least one of focal_px/fx/fy/cx/cy"})
+        _json_response(
+            handler,
+            400,
+            {"ok": False, "error": "provide at least one of focal_px/fx/fy/cx/cy/dist_coeffs"},
+        )
         return
     intrinsics = _validate_intrinsics(values, base=_effective_intrinsics(config))
     _save_runtime_intrinsics(config, intrinsics)
+    _json_response(handler, 200, _runtime_config_payload(config))
+
+
+def _serve_intrinsics_right_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
+    if handler.command == "GET":
+        _json_response(handler, 200, _runtime_config_payload(config))
+        return
+    overrides = _request_overrides(handler)
+    mapping = {
+        "fx_right": "fx",
+        "fy_right": "fy",
+        "cx_right": "cx",
+        "cy_right": "cy",
+        "dist_coeffs_right": "dist_coeffs",
+    }
+    values = {dst: overrides[src] for src, dst in mapping.items() if src in overrides}
+    if not values:
+        _json_response(
+            handler,
+            400,
+            {"ok": False, "error": "provide at least one of fx_right/fy_right/cx_right/cy_right/dist_coeffs_right"},
+        )
+        return
+    intrinsics_right = _validate_intrinsics_right(values, base=_effective_intrinsics_right(config))
+    _save_runtime_intrinsics_right(config, intrinsics_right)
+    _json_response(handler, 200, _runtime_config_payload(config))
+
+
+def _serve_stereo_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
+    if handler.command == "GET":
+        _json_response(handler, 200, _runtime_config_payload(config))
+        return
+    length = int(handler.headers.get("Content-Length") or 0)
+    if length <= 0:
+        _json_response(handler, 400, {"ok": False, "error": "request JSON body with R and T is required"})
+        return
+    data = json.loads(handler.rfile.read(length).decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("request JSON body must be an object")
+    stereo = _validate_stereo(data.get("stereo", data))
+    _save_runtime_stereo(config, stereo)
     _json_response(handler, 200, _runtime_config_payload(config))
 
 
@@ -653,6 +866,7 @@ def _build_pose_args(
     overrides: dict[str, Any],
 ) -> argparse.Namespace:
     intrinsics = _request_intrinsics(config, overrides)
+    intrinsics_right = _request_intrinsics_right(config, overrides)
     argv = [
         "--mode",
         "yolo",
@@ -680,11 +894,30 @@ def _build_pose_args(
         str(intrinsics["cx"]),
         "--cy",
         str(intrinsics["cy"]),
+        # Use --opt=value so comma lists that may start with '-' are not parsed as flags.
+        "--dist-coeffs=" + ",".join(str(value) for value in intrinsics["dist_coeffs"]),
+        "--fx-right",
+        str(intrinsics_right["fx"]),
+        "--fy-right",
+        str(intrinsics_right["fy"]),
+        "--cx-right",
+        str(intrinsics_right["cx"]),
+        "--cy-right",
+        str(intrinsics_right["cy"]),
+        "--dist-coeffs-right=" + ",".join(str(value) for value in intrinsics_right["dist_coeffs"]),
         "--out-dir",
         str(out_dir),
     ]
+    stereo = _effective_stereo(config)
+    if stereo is not None:
+        argv.append("--stereo-r=" + ",".join(str(value) for value in stereo["R"]))
+        argv.append("--stereo-t=" + ",".join(str(value) for value in stereo["T"]))
+    skip = {
+        "focal_px", "fx", "fy", "cx", "cy", "dist_coeffs",
+        "fx_right", "fy_right", "cx_right", "cy_right", "dist_coeffs_right",
+    }
     for name, value in overrides.items():
-        if name in {"focal_px", "fx", "fy", "cx", "cy"}:
+        if name in skip:
             continue
         _append_arg(argv, name, value)
     return build_arg_parser().parse_args(argv)
@@ -868,6 +1101,11 @@ def _compact_pose(result: dict[str, Any], exit_code: int) -> dict[str, Any]:
         "center_above": result.get("center_above"),
         "range_from_left_camera_mm": result.get("range_from_left_camera_mm"),
         "intrinsics_assumption": result.get("intrinsics_assumption"),
+        "intrinsics_assumption_right": result.get("intrinsics_assumption_right"),
+        "left": result.get("left"),
+        "right": result.get("right"),
+        "stereo": result.get("stereo"),
+        "stereo_plane": result.get("stereo_plane"),
         "left_depth_mm": result.get("left_depth_mm"),
         "optical_axis_depth_mm": result.get("optical_axis_depth_mm"),
         "selected_orientation": result.get("selected_orientation"),
@@ -1424,17 +1662,29 @@ def _debug_intrinsics_from_payload(payload: dict[str, Any]) -> dict[str, float]:
             return float(fallback)
 
     focal = read_float("focal_px", 260.0)
+    raw_dist = intrinsics.get("dist_coeffs")
+    dist_coeffs = [0.0, 0.0, 0.0, 0.0, 0.0]
+    if isinstance(raw_dist, (list, tuple)):
+        for idx in range(min(5, len(raw_dist))):
+            try:
+                dist_coeffs[idx] = float(raw_dist[idx])
+            except Exception:
+                dist_coeffs[idx] = 0.0
     return {
         "fx": read_float("fx", focal),
         "fy": read_float("fy", focal),
         "cx": read_float("cx", 320.0),
         "cy": read_float("cy", 240.0),
+        "dist_coeffs": dist_coeffs,
     }
 
 
 def _debug_intrinsics_query(payload: dict[str, Any]) -> str:
     intrinsics = _debug_intrinsics_from_payload(payload)
-    return urlencode({name: f"{value:.6g}" for name, value in intrinsics.items()}) + "&"
+    scalar = {name: f"{value:.6g}" for name, value in intrinsics.items() if name != "dist_coeffs"}
+    dist = intrinsics.get("dist_coeffs") or []
+    scalar["dist_coeffs"] = ",".join(f"{float(value):.6g}" for value in dist)
+    return urlencode(scalar) + "&"
 
 
 def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
@@ -1454,10 +1704,79 @@ def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
         )
         for name, input_id, label in fields
     )
+    dist = intrinsics.get("dist_coeffs") or [0.0, 0.0, 0.0, 0.0, 0.0]
+    dist_labels = ("k1", "k2", "p1", "p2", "k3")
+    dist_inputs = "".join(
+        (
+            f'<label>{dist_labels[idx]}'
+            f'<input id="debugDist{idx}Input" data-dist-index="{idx}" '
+            f'type="number" step="0.000001" value="{float(dist[idx]):.6f}">'
+            "</label>"
+        )
+        for idx in range(5)
+    )
+
+    right_raw = payload.get("intrinsics_assumption_right")
+    if not isinstance(right_raw, dict):
+        right_raw = {}
+
+    def _read_right(name: str, fallback: float) -> float:
+        try:
+            return float(right_raw.get(name, fallback))
+        except Exception:
+            return float(fallback)
+
+    right_vals = {
+        "fx": _read_right("fx", intrinsics["fx"]),
+        "fy": _read_right("fy", intrinsics["fy"]),
+        "cx": _read_right("cx", intrinsics["cx"]),
+        "cy": _read_right("cy", intrinsics["cy"]),
+    }
+    right_dist_raw = right_raw.get("dist_coeffs")
+    right_dist = list(dist)
+    if isinstance(right_dist_raw, (list, tuple)):
+        right_dist = [0.0, 0.0, 0.0, 0.0, 0.0]
+        for idx in range(min(5, len(right_dist_raw))):
+            try:
+                right_dist[idx] = float(right_dist_raw[idx])
+            except Exception:
+                right_dist[idx] = 0.0
+    right_scalar_inputs = "".join(
+        (
+            f'<label>{name}'
+            f'<input id="debugRight{name}Input" data-intrinsic-right="{name}" '
+            f'type="number" step="0.01" value="{right_vals[name]:.2f}">'
+            "</label>"
+        )
+        for name in ("fx", "fy", "cx", "cy")
+    )
+    right_dist_inputs = "".join(
+        (
+            f'<label>{dist_labels[idx]}'
+            f'<input id="debugRightDist{idx}Input" data-dist-right-index="{idx}" '
+            f'type="number" step="0.000001" value="{float(right_dist[idx]):.6f}">'
+            "</label>"
+        )
+        for idx in range(5)
+    )
+    mirrors_left = bool(right_raw.get("mirrors_left", True))
+    right_section = (
+        '<details class="debug-intrinsics-advanced">'
+        f'<summary>右眼相机内参{"（当前与左眼相同）" if mirrors_left else "（独立标定）"}</summary>'
+        '<div class="debug-intrinsics-fields">'
+        f"{right_scalar_inputs}"
+        f"{right_dist_inputs}"
+        '<button id="debugSaveRightIntrinsics" class="button primary-alt-button" type="button">保存右眼内参</button>'
+        '<span id="debugRightIntrinsicsStatus"></span>'
+        '<span>右眼用于独立输出 right_camera_optical 坐标；留空字段会沿用左眼。</span>'
+        "</div>"
+        "</details>"
+    )
     current = (
         f"当前 API 默认 / 本次计算："
         f"fx={intrinsics['fx']:.2f}, fy={intrinsics['fy']:.2f}, "
-        f"cx={intrinsics['cx']:.2f}, cy={intrinsics['cy']:.2f}"
+        f"cx={intrinsics['cx']:.2f}, cy={intrinsics['cy']:.2f}, "
+        f"dist=[{', '.join(f'{float(value):.5f}' for value in dist)}]"
     )
     return (
         '<div class="debug-intrinsics-panel">'
@@ -1471,11 +1790,13 @@ def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
         '<summary>高级：手动修改或恢复旧默认</summary>'
         '<div class="debug-intrinsics-fields">'
         f"{inputs}"
+        f"{dist_inputs}"
         '<button id="debugSaveDefaultIntrinsics" class="button primary-alt-button" type="button">保存手动值为 API 默认</button>'
         '<button id="debugUseDefaultIntrinsics" class="button" type="button">恢复旧默认 260</button>'
         '<span>高级设置保存后，后续 /xyz、/pose 不带参数也会使用这里的默认值。</span>'
         "</div>"
         "</details>"
+        f"{right_section}"
         "</div>"
     )
 
@@ -1963,6 +2284,11 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       const pose = document.getElementById("debugPoseLink");
       const xyz = document.getElementById("debugXyzLink");
       const intrinsicInputs = Array.from(document.querySelectorAll("[data-intrinsic]"));
+      const distInputs = Array.from(document.querySelectorAll("[data-dist-index]"));
+      const rightInputs = Array.from(document.querySelectorAll("[data-intrinsic-right]"));
+      const rightDistInputs = Array.from(document.querySelectorAll("[data-dist-right-index]"));
+      const saveRightButton = document.getElementById("debugSaveRightIntrinsics");
+      const rightStatus = document.getElementById("debugRightIntrinsicsStatus");
       const saveCalibratedButton = document.getElementById("debugSaveCalibratedIntrinsics");
       const defaultButton = document.getElementById("debugUseDefaultIntrinsics");
       const saveDefaultButton = document.getElementById("debugSaveDefaultIntrinsics");
@@ -1982,12 +2308,24 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         }}
         return values;
       }};
+      const readDistCoeffs = () => {{
+        const coeffs = [0, 0, 0, 0, 0];
+        for (const input of distInputs) {{
+          const idx = Number(input.dataset.distIndex);
+          const value = Number(input.value);
+          if (Number.isInteger(idx) && idx >= 0 && idx < 5 && Number.isFinite(value)) {{
+            coeffs[idx] = value;
+          }}
+        }}
+        return coeffs;
+      }};
       const readIntrinsicsQuery = () => {{
         const params = new URLSearchParams();
         const values = readIntrinsicsObject();
         for (const [name, value] of Object.entries(values)) {{
           params.set(name, String(value));
         }}
+        if (distInputs.length) params.set("dist_coeffs", readDistCoeffs().join(","));
         const text = params.toString();
         return text ? `${{text}}&` : "";
       }};
@@ -2056,6 +2394,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
             return;
           }}
         }}
+        if (distInputs.length) values.dist_coeffs = readDistCoeffs();
         button.disabled = true;
         if (saveStatus) saveStatus.textContent = "保存中...";
         try {{
@@ -2076,6 +2415,41 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           if (saveStatus) saveStatus.textContent = `保存失败: ${{err}}`;
         }} finally {{
           button.disabled = false;
+        }}
+      }};
+      const saveRightIntrinsics = async () => {{
+        if (!saveRightButton) return;
+        const body = {{}};
+        for (const input of rightInputs) {{
+          const name = input.dataset.intrinsicRight;
+          const value = Number(input.value);
+          if (name && Number.isFinite(value)) body[`${{name}}_right`] = value;
+        }}
+        if (rightDistInputs.length) {{
+          const coeffs = [0, 0, 0, 0, 0];
+          for (const input of rightDistInputs) {{
+            const idx = Number(input.dataset.distRightIndex);
+            const value = Number(input.value);
+            if (Number.isInteger(idx) && idx >= 0 && idx < 5 && Number.isFinite(value)) coeffs[idx] = value;
+          }}
+          body.dist_coeffs_right = coeffs;
+        }}
+        saveRightButton.disabled = true;
+        if (rightStatus) rightStatus.textContent = "保存中...";
+        try {{
+          const res = await fetch("/config/intrinsics_right", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify(body),
+            cache: "no-store",
+          }});
+          const payload = await res.json();
+          if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
+          if (rightStatus) rightStatus.textContent = "已保存右眼内参";
+        }} catch (err) {{
+          if (rightStatus) rightStatus.textContent = `保存失败: ${{err}}`;
+        }} finally {{
+          saveRightButton.disabled = false;
         }}
       }};
       const readObjectSizesObject = () => {{
@@ -2119,6 +2493,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       }};
       if (select) select.addEventListener("change", updateLinks);
       for (const input of intrinsicInputs) input.addEventListener("input", updateLinks);
+      for (const input of distInputs) input.addEventListener("input", updateLinks);
       if (saveObjectSizesButton) saveObjectSizesButton.addEventListener("click", saveObjectSizes);
       if (saveCalibratedButton) saveCalibratedButton.addEventListener("click", async () => {{
         setIntrinsics(calibratedIntrinsics);
@@ -2129,6 +2504,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         await saveDefaultIntrinsics(defaultButton);
       }});
       if (saveDefaultButton) saveDefaultButton.addEventListener("click", () => saveDefaultIntrinsics(saveDefaultButton));
+      if (saveRightButton) saveRightButton.addEventListener("click", saveRightIntrinsics);
       if (runAgain) runAgain.addEventListener("click", runDebugRequest);
       updateLinks();
     }})();
@@ -2195,6 +2571,9 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "intrinsics_startup_defaults": _server_intrinsics(config),
         "intrinsics_runtime_defaults": _runtime_intrinsics(),
         "intrinsics_effective_defaults": _effective_intrinsics(config),
+        "intrinsics_right_effective_defaults": _effective_intrinsics_right(config),
+        "stereo_effective": _effective_stereo(config),
+        "stereo_available": _effective_stereo(config) is not None,
         "object_sizes_runtime_defaults": _runtime_object_sizes(),
         "object_sizes_effective_defaults": _effective_object_sizes(config),
         "yolo_class_names": _yolo_class_names(config.yolo_model),
@@ -2204,6 +2583,8 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "endpoints": [
             "/health",
             "/config/intrinsics",
+            "/config/intrinsics_right",
+            "/config/stereo",
             "/config/object_sizes",
             "/pose",
             "/xyz",
@@ -2276,6 +2657,12 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 if path == "/config/intrinsics":
                     _serve_intrinsics_config(self, config)
                     return
+                if path == "/config/intrinsics_right":
+                    _serve_intrinsics_right_config(self, config)
+                    return
+                if path == "/config/stereo":
+                    _serve_stereo_config(self, config)
+                    return
                 if path == "/config/object_sizes":
                     _serve_object_sizes_config(self, config)
                     return
@@ -2333,6 +2720,22 @@ def build_arg_parser_server() -> argparse.ArgumentParser:
     parser.add_argument("--cx", type=float, default=320.0)
     parser.add_argument("--cy", type=float, default=240.0)
     parser.add_argument(
+        "--dist-coeffs",
+        default=None,
+        help="default left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3; defaults to all zeros",
+    )
+    parser.add_argument("--fx-right", type=float, help="default right camera fx; defaults to the left fx")
+    parser.add_argument("--fy-right", type=float, help="default right camera fy; defaults to the left fy")
+    parser.add_argument("--cx-right", type=float, help="default right camera cx; defaults to the left cx")
+    parser.add_argument("--cy-right", type=float, help="default right camera cy; defaults to the left cy")
+    parser.add_argument(
+        "--dist-coeffs-right",
+        default=None,
+        help="default right camera distortion as comma-separated coeffs k1,k2,p1,p2,k3; defaults to the left distortion",
+    )
+    parser.add_argument("--stereo-r", default=None, help="stereo rotation R, 9 comma-separated values (row-major 3x3)")
+    parser.add_argument("--stereo-t", default=None, help="stereo translation T, 3 comma-separated values in mm")
+    parser.add_argument(
         "--runtime-config",
         type=Path,
         default=Path("config/cigarette_pose_runtime.json"),
@@ -2358,6 +2761,16 @@ def main() -> int:
         fy=args.fy,
         cx=args.cx,
         cy=args.cy,
+        dist_coeffs=parse_dist_coeffs(args.dist_coeffs),
+        fx_right=args.fx_right,
+        fy_right=args.fy_right,
+        cx_right=args.cx_right,
+        cy_right=args.cy_right,
+        dist_coeffs_right=(
+            parse_dist_coeffs(args.dist_coeffs_right) if args.dist_coeffs_right is not None else None
+        ),
+        stereo_R=parse_float_list(args.stereo_r, expected=9),
+        stereo_T=parse_float_list(args.stereo_t, expected=3),
         runtime_config_path=args.runtime_config,
         warmup=not args.no_warmup,
     )

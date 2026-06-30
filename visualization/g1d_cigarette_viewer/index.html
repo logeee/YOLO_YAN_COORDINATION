@@ -24,7 +24,7 @@
 
         <label class="field">
           <span>XYZ 地址</span>
-          <input id="sourceUrl" value="http://127.0.0.1:18081/xyz" />
+          <input id="sourceUrl" value="http://192.168.123.164:18081/xyz" />
         </label>
 
         <label class="field">
@@ -48,6 +48,78 @@
           </label>
         </div>
 
+        <div class="method-toggle">
+          <span class="method-toggle-title">方法对比</span>
+          <div class="button-row two-col">
+            <button id="selectAllMethods" type="button">全选</button>
+            <button id="clearAllMethods" type="button">全不选</button>
+          </div>
+          <label class="method-check method-old">
+            <input id="showOldOld" type="checkbox" checked />
+            <span>① 老内参 + 老外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-new">
+            <input id="showOldNew" type="checkbox" checked />
+            <span>② 老内参 + 新外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-newintr">
+            <input id="showNewNew" type="checkbox" checked />
+            <span>③ 新内参 + 新外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-newold">
+            <input id="showNewOld" type="checkbox" checked />
+            <span>④ 新内参 + 老外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-newdist">
+            <input id="showNewNewDist" type="checkbox" checked />
+            <span>⑤ 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-right">
+            <input id="showRightNew" type="checkbox" checked />
+            <span>⑥ 右眼 新内参 + 新外参 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-rightdist">
+            <input id="showRightNewDist" type="checkbox" checked />
+            <span>⑦ 右眼 新内参 + 新外参 + 畸变校正 (YOLO PnP)</span>
+          </label>
+          <label class="method-check method-stereo">
+            <input id="showStereo" type="checkbox" checked />
+            <span>⑧ 双目深度 (双目三角测量)</span>
+          </label>
+          <label class="method-check method-stereoplane">
+            <input id="showStereoPlane" type="checkbox" checked />
+            <span>⑨ 双目深度 + mask内特征匹配 (特征极线RANSAC)</span>
+          </label>
+          <label class="method-check">
+            <input id="centerOnly" type="checkbox" />
+            <span>只显示中心点（隐藏盒子外形）</span>
+          </label>
+          <label class="method-check">
+            <input id="showXPlane" type="checkbox" />
+            <span>显示基座 X 平面</span>
+          </label>
+          <label class="field">
+            <span>X 位置 mm</span>
+            <input id="xPlaneMm" type="number" step="10" value="0" />
+          </label>
+          <label class="method-check">
+            <input id="showYPlane" type="checkbox" />
+            <span>显示基座 Y 平面</span>
+          </label>
+          <label class="field">
+            <span>Y 位置 mm</span>
+            <input id="yPlaneMm" type="number" step="10" value="0" />
+          </label>
+          <label class="method-check">
+            <input id="showZPlane" type="checkbox" />
+            <span>显示基座 Z 平面</span>
+          </label>
+          <label class="field">
+            <span>Z 高度 mm</span>
+            <input id="zPlaneMm" type="number" step="10" value="0" />
+          </label>
+        </div>
+
         <input id="columnExtensionMm" type="hidden" value="420" />
         <input id="cameraX" type="hidden" value="0.0576235" />
         <input id="cameraY" type="hidden" value="0.01753" />
@@ -57,10 +129,93 @@
           <button id="fetchBtn" class="primary-action" type="button">刷新数据</button>
         </div>
 
+        <div class="pick-panel" id="baseCoordPanel">
+          <span class="method-toggle-title">基座系坐标 (内参 × 外参 对比)</span>
+          <dl class="metrics">
+            <div><dt>① 老内参 + 老外参</dt><dd id="baseCoordOldOld">-</dd></div>
+            <div><dt>② 老内参 + 新外参</dt><dd id="baseCoordOldNew">-</dd></div>
+            <div><dt>③ 新内参 + 新外参</dt><dd id="baseCoordNewNew">-</dd></div>
+            <div><dt>④ 新内参 + 老外参</dt><dd id="baseCoordNewOld">-</dd></div>
+            <div><dt>⑤ 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordNewDist">-</dd></div>
+            <div><dt>⑥ 右眼 新内参 + 新外参</dt><dd id="baseCoordRightNew">-</dd></div>
+            <div><dt>⑦ 右眼 新内参 + 新外参 + 畸变校正</dt><dd id="baseCoordRightNewDist">-</dd></div>
+            <div><dt>⑧ 双目深度 (双目三角测量)</dt><dd id="baseCoordStereo">-</dd></div>
+            <div><dt>⑨ 双目深度 + mask内特征匹配</dt><dd id="baseCoordStereoPlane">-</dd></div>
+            <div><dt>外参差 (①→②)</dt><dd id="baseCoordDeltaEx">-</dd></div>
+            <div><dt>内参差 (②→③)</dt><dd id="baseCoordDeltaIn">-</dd></div>
+            <div><dt>左眼畸变差 (③→⑤)</dt><dd id="baseCoordDeltaDist">-</dd></div>
+            <div><dt>右眼畸变差 (⑥→⑦)</dt><dd id="baseCoordDeltaRightDist">-</dd></div>
+            <div><dt>双目vs单目差 (③→⑧)</dt><dd id="baseCoordDeltaStereo">-</dd></div>
+            <div><dt>双目特征vs单目差 (③→⑨)</dt><dd id="baseCoordDeltaStereoPlane">-</dd></div>
+          </dl>
+          <div class="button-row data-row">
+            <button id="baseCoordRefresh" class="primary-action" type="button">获取基座坐标</button>
+          </div>
+          <p id="baseCoordStatus" class="pick-status">点"获取基座坐标"后显示 (torso_link 系, [X前, Y左, Z上], 单位 mm)</p>
+        </div>
+
+        <div class="auto-row">
+          <label class="auto-check">
+            <input id="autoRefresh" type="checkbox" checked />
+            <span>自动刷新机械臂姿态(不动 YOLO/视角)</span>
+          </label>
+          <label class="field auto-interval">
+            <span>间隔 ms</span>
+            <input id="autoInterval" type="number" min="100" step="100" value="500" />
+          </label>
+        </div>
+
         <div class="button-row">
           <button id="normalViewBtn" type="button">正常</button>
           <button id="topViewBtn" type="button">俯视</button>
           <button id="sideViewBtn" type="button">侧视</button>
+        </div>
+
+        <div class="pick-panel" id="pickPanel">
+          <span class="method-toggle-title">抓取(前端控制)</span>
+          <div class="button-row">
+            <button id="pkDetect" type="button">识别烟盒</button>
+            <button id="pkSim" class="primary-action" type="button">模拟执行</button>
+            <button id="pkRun" class="danger-action" type="button">真机执行</button>
+          </div>
+          <p id="pickStatus" class="pick-status">就绪</p>
+        </div>
+
+        <div class="pick-panel" id="readyPanel">
+          <span class="method-toggle-title">预备位姿(抬臂防撞桌)</span>
+          <div class="button-row two-col">
+            <button id="rpSave" class="primary-action" type="button">保存为预备位姿</button>
+            <button id="rpLoad" type="button">查看已存</button>
+          </div>
+          <p id="readyStatus" class="pick-status">先手动把机械臂抬到理想区域,再点保存</p>
+        </div>
+
+        <div class="playback" id="playbackPanel">
+          <span class="method-toggle-title">抓取轨迹回放(规划)</span>
+          <div class="button-row">
+            <button id="pbLoadServer" type="button">载入规划</button>
+            <label class="pb-file-btn" for="pbFile">选择 JSON 文件</label>
+            <input id="pbFile" type="file" accept="application/json,.json" hidden />
+          </div>
+          <div class="button-row">
+            <button id="pbPlay" class="primary-action" type="button" disabled>播放</button>
+            <button id="pbRestart" type="button" disabled>重置</button>
+            <label class="field auto-interval">
+              <span>速度</span>
+              <select id="pbSpeed">
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+          </div>
+          <input id="pbSlider" type="range" min="0" max="1" step="0.001" value="0" disabled />
+          <dl class="metrics pb-metrics">
+            <div><dt>时间</dt><dd id="pbTime">-</dd></div>
+            <div><dt>阶段</dt><dd id="pbPhase">-</dd></div>
+            <div><dt>吸盘</dt><dd id="pbSuction">-</dd></div>
+          </dl>
         </div>
 
         <dl class="metrics">
@@ -89,6 +244,10 @@
             <dd id="metricYaw">-</dd>
           </div>
           <div>
+            <dt>校正前后中心差</dt>
+            <dd id="metricDelta">-</dd>
+          </div>
+          <div>
             <dt>状态来源</dt>
             <dd id="metricState">-</dd>
           </div>
@@ -103,10 +262,11 @@
           <span><i class="axis-y"></i>Y 左</span>
           <span><i class="axis-z"></i>Z 上</span>
           <span><i class="robot-color"></i>G1-D</span>
-          <span><i class="box-color"></i>烟盒</span>
+          <span><i class="box-new"></i>标定校正后</span>
+          <span><i class="box-old"></i>标定校正前</span>
         </div>
       </section>
     </main>
-    <script type="module" src="./app.js?v=20260612_g1d_viewer_larger_portrait_embed"></script>
+    <script type="module" src="./app.js?v=20260622_5method_centeronly_v10"></script>
   </body>
 </html>
