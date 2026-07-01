@@ -393,6 +393,31 @@ const BOX_EDGE_RIGHTDIST = 0xff8c42; // ⑦ 右眼 新内参 + 新外参 + 畸�
 const BOX_EDGE_STEREO = 0x00e0c0;    // ⑧ 双目深度(青绿)
 const BOX_EDGE_STEREOPLANE = 0xffd24a; // ⑨ 双目深度+mask内特征匹配(金黄)
 
+function getFallbackCenterPointMm(pose) {
+  const fromViz = pose?.g1d_visualization?.box?.center_xyz_mm;
+  if (Array.isArray(fromViz) && fromViz.length >= 3) return getPoint(fromViz);
+  const fromTop = pose?.center_xyz_mm;
+  if (Array.isArray(fromTop) && fromTop.length >= 3) return getPoint(fromTop);
+  return null;
+}
+
+function drawFallbackPoseBox(pose, centerOnly) {
+  const centerMm = getFallbackCenterPointMm(pose);
+  if (!centerMm) return null;
+  const frame = getCameraFrame(pose);
+  const center = frame.origin.clone().add(opticalPointToRobot(centerMm, pose));
+  const torso = getLinkWorldTransform(DEFAULT_CAMERA_PARENT_LINK);
+  const torsoQuat = torso?.quaternion || new THREE.Quaternion();
+  const yawQuat = torsoQuat.clone().multiply(
+    new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0, getBoxYawRobotRad(pose))),
+  );
+  const dims = getBoxDimensions(pose);
+  if (!centerOnly) drawCigaretteBox(center, yawQuat, dims, BOX_EDGE_STEREO, getPoseLabel(pose));
+  addPointMarker(cigaretteGroup, center, BOX_EDGE_STEREO, "center");
+  addCameraToBoxLine(frame.origin, center, BOX_EDGE_STEREO);
+  return center;
+}
+
 function renderPose(pose, { frame = false } = {}) {
   cigaretteGroup.clear();
   updateCameraMarker();
@@ -424,6 +449,14 @@ function renderPose(pose, { frame = false } = {}) {
   const drawStereoPlane = wantStereoPlane && bc && Array.isArray(bc.c_stereo_plane_m);
 
   if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist && !drawRightNew && !drawRightNewDist && !drawStereo && !drawStereoPlane) {
+    const fallbackCenter = drawFallbackPoseBox(pose, centerOnly);
+    if (fallbackCenter) {
+      if (dom.metricDelta) dom.metricDelta.textContent = "-";
+      setStatus(bc ? "使用中心点兜底显示" : "使用 center_xyz_mm 显示烟盒");
+      writeSceneState();
+      if (frame) scheduleFrameScene();
+      return;
+    }
     setStatus(bc ? "未勾选任何方法(或缺少对应数据)" : "缺少 base_coords / center_xyz_mm");
     if (dom.metricDelta) dom.metricDelta.textContent = "-";
     writeSceneState();
@@ -1301,8 +1334,19 @@ function getBoxDimensions(pose) {
     const b = Number(pose.object_top_size_mm[1]) / 1000;
     longSide = Math.max(a, b);
     shortSide = Math.min(a, b);
+  } else if (pose.object_box_size_mm) {
+    const a = Number(pose.object_box_size_mm.length_mm) / 1000;
+    const b = Number(pose.object_box_size_mm.width_mm) / 1000;
+    if (Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0) {
+      longSide = Math.max(a, b);
+      shortSide = Math.min(a, b);
+    }
   }
-  const thickness = Math.max(0.005, Number(dom.thicknessMm.value || catalog.thickness * 1000) / 1000);
+  const configuredThickness = Number(pose.object_box_size_mm?.height_mm ?? pose.g1d_visualization?.box?.object_box_size_mm?.height_mm);
+  const thicknessMm = Number.isFinite(configuredThickness) && configuredThickness > 0
+    ? configuredThickness
+    : (dom.thicknessMm.value || catalog.thickness * 1000);
+  const thickness = Math.max(0.005, Number(thicknessMm) / 1000);
   return { long: longSide, short: shortSide, thickness };
 }
 
@@ -1325,7 +1369,12 @@ function getBoxYawRobotRad(pose) {
 }
 
 function getPoseLabel(pose) {
-  return pose.selected_yolo_label || pose.requested_yolo_label || dom.labelSelect.value || "Xizi_Liqun";
+  return pose?.g1d_visualization?.yolo?.display_name
+    || pose?.object_box_size_mm?.name
+    || pose.selected_yolo_label
+    || pose.requested_yolo_label
+    || dom.labelSelect.value
+    || "Xizi_Liqun";
 }
 
 function addLocalArrow(group, start, vector, color) {

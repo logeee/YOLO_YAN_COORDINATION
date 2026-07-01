@@ -9,6 +9,7 @@ model stays cached on the Jetson GPU between requests.
 from __future__ import annotations
 
 import argparse
+import cgi
 import html as html_lib
 import json
 import math
@@ -98,7 +99,8 @@ RUNTIME_CONFIG_LOCK = threading.Lock()
 RUNTIME_INTRINSICS: dict[str, float] | None = None
 RUNTIME_INTRINSICS_RIGHT: dict[str, Any] | None = None
 RUNTIME_STEREO: dict[str, Any] | None = None
-RUNTIME_OBJECT_SIZES_MM: dict[str, dict[str, float]] | None = None
+RUNTIME_YOLO_MODEL: str | None = None
+RUNTIME_OBJECT_SIZES_MM: dict[str, dict[str, Any]] | None = None
 REQUEST_COUNTER = 0
 REQUEST_COUNTER_LOCK = threading.Lock()
 IMAGE_CLIENTS: dict[str, Any] = {}
@@ -117,6 +119,58 @@ BUILTIN_OBJECT_SIZES_MM: dict[str, dict[str, float]] = {
     for name, (long_side_m, short_side_m) in YOLO_CLASS_TOP_SIZES_M.items()
 }
 DEFAULT_OBJECT_SIZE_MM = {"length_mm": 161.0, "width_mm": 95.0, "height_mm": 20.0}
+DEFAULT_CIGARETTE_NAMES = {
+    "31019915": "熊猫(典藏中支)",
+    "43010159": "白沙(和天下尊品中支)",
+    "48013265": "娇子（五粮浓香中支）",
+    "33013189": "利群（休闲金中支）",
+    "42013109": "黄鹤楼(3mg)",
+    "33013181": "利群(阳光尊细支)",
+    "42013086": "黄鹤楼(逍遥6号)",
+    "42013085": "黄鹤楼(雪之梦10号)",
+    "34063141": "王冠(假日船长)",
+    "34063140": "王冠(古雪1号)",
+    "34063147": "王冠(假日·黄金海岸)",
+    "42013097": "黄鹤楼(逍遥7号)",
+    "42013096": "黄鹤楼(逍遥5号)",
+    "34063142": "王冠(浪漫假日)",
+    "42013075": "黄鹤楼(雪之梦5号)",
+    "34063136": "王冠(国粹满堂彩)",
+    "34063135": "王冠(假日阳光)",
+    "48090225": "长城(盛世3号)",
+    "48090217": "长城(经典3号)",
+    "48090201": "长城(红色132)",
+    "XiongMao": "熊猫烟",
+    "Xizi_Liqun": "西子利群",
+}
+DEFAULT_CIGARETTE_IDS_BY_CLASS = {
+    "0": "31019915",
+    "1": "43010159",
+    "2": "48013265",
+    "3": "33013189",
+    "4": "42013109",
+    "5": "33013181",
+    "6": "42013086",
+    "7": "42013085",
+    "8": "34063141",
+    "9": "34063140",
+    "10": "34063147",
+    "11": "42013097",
+    "12": "42013096",
+    "13": "34063142",
+    "14": "42013075",
+    "15": "34063136",
+    "16": "34063135",
+    "17": "48090225",
+    "18": "48090217",
+    "19": "48090201",
+}
+DEFAULT_CIGARETTE_NAMES.update(
+    {
+        class_index: DEFAULT_CIGARETTE_NAMES[cigarette_id]
+        for class_index, cigarette_id in DEFAULT_CIGARETTE_IDS_BY_CLASS.items()
+    }
+)
 G1D_ADJUST_URL = "http://127.0.0.1:18084/adjust"
 G1D_TARGET_ANGLE_ADJUST_URL = "http://127.0.0.1:18084/adjust_target_angle"
 G1D_RIGHT_ENTRY_ADJUST_URL = "http://127.0.0.1:18084/adjust_right_entry"
@@ -349,7 +403,16 @@ def _runtime_intrinsics() -> dict[str, float] | None:
         return dict(RUNTIME_INTRINSICS) if RUNTIME_INTRINSICS is not None else None
 
 
-def _runtime_object_sizes() -> dict[str, dict[str, float]] | None:
+def _runtime_yolo_model() -> str | None:
+    with RUNTIME_CONFIG_LOCK:
+        return str(RUNTIME_YOLO_MODEL) if RUNTIME_YOLO_MODEL else None
+
+
+def _effective_yolo_model(config: ServerConfig) -> str:
+    return _runtime_yolo_model() or str(config.yolo_model)
+
+
+def _runtime_object_sizes() -> dict[str, dict[str, Any]] | None:
     with RUNTIME_CONFIG_LOCK:
         if RUNTIME_OBJECT_SIZES_MM is None:
             return None
@@ -481,18 +544,137 @@ def _write_runtime_config_data(config: ServerConfig, payload: dict[str, Any]) ->
     tmp.replace(path)
 
 
+def _model_path_for_config(model_path: str | Path) -> str:
+    resolved = resolve_model_path(model_path)
+    try:
+        return resolved.relative_to(Path.cwd().resolve()).as_posix()
+    except Exception:
+        return str(resolved)
+
+
+def _validate_yolo_model_path(model_path: Any) -> str:
+    raw = str(model_path or "").strip()
+    if not raw:
+        raise ValueError("yolo_model is required")
+    if not raw.lower().endswith(".pt"):
+        raise ValueError("YOLO model must be a .pt file")
+    resolved = resolve_model_path(raw)
+    if not resolved.exists():
+        raise ValueError(f"YOLO model does not exist: {raw}")
+    # Load once here so a broken/non-segmentation model fails before becoming default.
+    get_yolo_model(resolved, task="segment")
+    MODEL_CLASS_NAMES_CACHE.pop(str(resolved), None)
+    _yolo_class_names(resolved)
+    return _model_path_for_config(resolved)
+
+
+def _available_yolo_models(config: ServerConfig) -> list[str]:
+    values: list[str] = []
+    for candidate in (config.yolo_model, _runtime_yolo_model()):
+        if candidate:
+            try:
+                value = _model_path_for_config(candidate)
+            except Exception:
+                value = str(candidate)
+            if value not in values:
+                values.append(value)
+    for root in (Path("models"), Path.cwd() / "models"):
+        if not root.exists():
+            continue
+        for path in sorted(root.glob("*.pt")):
+            try:
+                value = _model_path_for_config(path)
+            except Exception:
+                value = str(path)
+            if value not in values:
+                values.append(value)
+    return values
+
+
+def _yolo_model_config_payload(config: ServerConfig) -> dict[str, Any]:
+    effective_model = _effective_yolo_model(config)
+    return {
+        "ok": True,
+        "config_path": str(config.runtime_config_path),
+        "startup_default": str(config.yolo_model),
+        "runtime_default": _runtime_yolo_model(),
+        "effective_model": effective_model,
+        "available_models": _available_yolo_models(config),
+        "yolo_class_names": _yolo_class_names(effective_model),
+    }
+
+
 def _normalize_size_label(label: Any) -> str:
     return str(label or "").strip()
 
 
-def _validate_object_size(label: str, raw: dict[str, Any], base: dict[str, float] | None = None) -> dict[str, float]:
+def _default_cigarette_name(label: str) -> str:
+    return DEFAULT_CIGARETTE_NAMES.get(str(label), str(label))
+
+
+def _default_cigarette_id(label: str) -> str:
+    normalized = str(label)
+    if normalized in DEFAULT_CIGARETTE_IDS_BY_CLASS:
+        return DEFAULT_CIGARETTE_IDS_BY_CLASS[normalized]
+    if normalized in DEFAULT_CIGARETTE_NAMES and normalized.isdigit() and len(normalized) >= 6:
+        return normalized
+    return ""
+
+
+def _label_display_name(label: Any) -> str:
+    normalized = _normalize_size_label(label)
+    return _default_cigarette_name(normalized) if normalized else ""
+
+
+def _payload_label_display_name(payload: dict[str, Any], label: Any) -> str:
+    normalized = _normalize_size_label(label)
+    if not normalized:
+        return ""
+    config_data = payload.get("object_size_config")
+    if isinstance(config_data, dict):
+        for key in ("object_infos", "cigarette_infos", "object_sizes", "effective_defaults"):
+            values = config_data.get(key)
+            if isinstance(values, dict):
+                info = values.get(normalized)
+                if isinstance(info, dict):
+                    name = info.get("name") or info.get("display_name")
+                    if name is not None and str(name).strip():
+                        return str(name).strip()
+    return _label_display_name(normalized)
+
+
+def _object_info_name(label: str, raw: dict[str, Any], base: dict[str, Any]) -> str:
+    for key in ("display_name", "cigarette_name", "name"):
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    for key in ("display_name", "cigarette_name", "name"):
+        value = base.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return _default_cigarette_name(label)
+
+
+def _object_info_cigarette_id(label: str, raw: dict[str, Any], base: dict[str, Any]) -> str:
+    for key in ("cigarette_id", "product_id", "id"):
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    for key in ("cigarette_id", "product_id", "id"):
+        value = base.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return _default_cigarette_id(label)
+
+
+def _validate_object_size(label: str, raw: dict[str, Any], base: dict[str, Any] | None = None) -> dict[str, Any]:
     base_values = base or DEFAULT_OBJECT_SIZE_MM
     aliases = {
         "length_mm": ("length_mm", "long_side_mm", "long_mm", "length"),
         "width_mm": ("width_mm", "short_side_mm", "short_mm", "width"),
         "height_mm": ("height_mm", "thickness_mm", "height", "thickness"),
     }
-    result: dict[str, float] = {}
+    result: dict[str, Any] = {}
     for target, names in aliases.items():
         value = None
         for name in names:
@@ -505,10 +687,12 @@ def _validate_object_size(label: str, raw: dict[str, Any], base: dict[str, float
         if not math.isfinite(number) or number <= 0.0:
             raise ValueError(f"{label} {target} must be a positive number")
         result[target] = round(number, 3)
+    result["cigarette_id"] = _object_info_cigarette_id(label, raw, base_values)
+    result["name"] = _object_info_name(label, raw, base_values)
     return result
 
 
-def _validate_object_sizes(raw: Any, base: dict[str, dict[str, float]] | None = None) -> dict[str, dict[str, float]]:
+def _validate_object_sizes(raw: Any, base: dict[str, dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
     if raw is None:
         return {}
     if isinstance(raw, list):
@@ -516,7 +700,9 @@ def _validate_object_sizes(raw: Any, base: dict[str, dict[str, float]] | None = 
         for item in raw:
             if not isinstance(item, dict):
                 raise ValueError("object_sizes list items must be JSON objects")
-            label = _normalize_size_label(item.get("label") or item.get("class_name") or item.get("name"))
+            label = _normalize_size_label(
+                item.get("label") or item.get("class_name") or item.get("id") or item.get("yolo_label")
+            )
             if not label:
                 raise ValueError("object_sizes list item missing label")
             values[label] = item
@@ -526,7 +712,7 @@ def _validate_object_sizes(raw: Any, base: dict[str, dict[str, float]] | None = 
         raise ValueError("object_sizes must be a JSON object or list")
 
     base_values = base or {}
-    sizes: dict[str, dict[str, float]] = {}
+    sizes: dict[str, dict[str, Any]] = {}
     for label_raw, size_raw in values.items():
         label = _normalize_size_label(label_raw)
         if not label:
@@ -537,22 +723,24 @@ def _validate_object_sizes(raw: Any, base: dict[str, dict[str, float]] | None = 
     return sizes
 
 
-def _startup_object_sizes(config: ServerConfig) -> dict[str, dict[str, float]]:
+def _startup_object_sizes(config: ServerConfig) -> dict[str, dict[str, Any]]:
     labels: list[str] = []
-    for label in _yolo_class_names(config.yolo_model):
+    for label in _yolo_class_names(_effective_yolo_model(config)):
         if label not in labels:
             labels.append(label)
     for label in BUILTIN_OBJECT_SIZES_MM:
         if label not in labels:
             labels.append(label)
 
-    sizes: dict[str, dict[str, float]] = {}
+    sizes: dict[str, dict[str, Any]] = {}
     for label in labels:
         sizes[label] = dict(BUILTIN_OBJECT_SIZES_MM.get(label, DEFAULT_OBJECT_SIZE_MM))
+        sizes[label]["cigarette_id"] = _default_cigarette_id(label)
+        sizes[label]["name"] = _default_cigarette_name(label)
     return sizes
 
 
-def _effective_object_sizes(config: ServerConfig) -> dict[str, dict[str, float]]:
+def _effective_object_sizes(config: ServerConfig) -> dict[str, dict[str, Any]]:
     sizes = _startup_object_sizes(config)
     runtime = _runtime_object_sizes()
     if runtime:
@@ -571,14 +759,17 @@ def _apply_object_sizes_to_pnp(config: ServerConfig) -> None:
 
 
 def _object_size_config_payload(config: ServerConfig) -> dict[str, Any]:
+    object_infos = _effective_object_sizes(config)
     return {
         "ok": True,
         "config_path": str(config.runtime_config_path),
         "startup_defaults": _startup_object_sizes(config),
         "runtime_defaults": _runtime_object_sizes(),
-        "effective_defaults": _effective_object_sizes(config),
-        "object_sizes": _effective_object_sizes(config),
-        "note": "length_mm/width_mm are used by YOLO class-aware PnP; height_mm is used by the G1-D 3D visualizer thickness",
+        "effective_defaults": object_infos,
+        "object_sizes": object_infos,
+        "object_infos": object_infos,
+        "cigarette_infos": object_infos,
+        "note": "name is used for display; length_mm/width_mm are used by YOLO class-aware PnP; height_mm is used by the G1-D 3D visualizer thickness",
     }
 
 
@@ -594,6 +785,7 @@ def _runtime_config_payload(config: ServerConfig) -> dict[str, Any]:
         "right_effective_defaults": _effective_intrinsics_right(config),
         "stereo_effective": _effective_stereo(config),
         "stereo_available": _effective_stereo(config) is not None,
+        "yolo_model": _yolo_model_config_payload(config),
         "object_sizes": _object_size_config_payload(config),
         "note": "pose/xyz/debug requests can still override these values with fx/fy/cx/cy query or JSON fields",
     }
@@ -604,6 +796,14 @@ def _load_runtime_intrinsics(config: ServerConfig) -> None:
     if not data:
         _apply_object_sizes_to_pnp(config)
         return
+    raw_yolo_model = data.get("yolo_model")
+    yolo_model_value = None
+    if raw_yolo_model is not None:
+        yolo_model_value = _validate_yolo_model_path(raw_yolo_model)
+        with RUNTIME_CONFIG_LOCK:
+            global RUNTIME_YOLO_MODEL
+            RUNTIME_YOLO_MODEL = yolo_model_value
+
     raw_intrinsics = data.get("intrinsics")
     if raw_intrinsics is None and any(name in data for name in ("focal_px", "fx", "fy", "cx", "cy", "dist_coeffs")):
         raw_intrinsics = data
@@ -667,7 +867,18 @@ def _save_runtime_stereo(config: ServerConfig, stereo: dict[str, Any]) -> None:
     _write_runtime_config_data(config, payload)
 
 
-def _save_runtime_object_sizes(config: ServerConfig, object_sizes: dict[str, dict[str, float]]) -> None:
+def _save_runtime_yolo_model(config: ServerConfig, yolo_model: str) -> None:
+    model_value = _validate_yolo_model_path(yolo_model)
+    payload = _read_runtime_config_data(config)
+    payload["yolo_model"] = model_value
+    with RUNTIME_CONFIG_LOCK:
+        global RUNTIME_YOLO_MODEL
+        RUNTIME_YOLO_MODEL = model_value
+    _write_runtime_config_data(config, payload)
+    _apply_object_sizes_to_pnp(config)
+
+
+def _save_runtime_object_sizes(config: ServerConfig, object_sizes: dict[str, dict[str, Any]]) -> None:
     payload = _read_runtime_config_data(config)
     payload["object_sizes"] = object_sizes
     with RUNTIME_CONFIG_LOCK:
@@ -737,6 +948,65 @@ def _serve_stereo_config(handler: BaseHTTPRequestHandler, config: ServerConfig) 
     _json_response(handler, 200, _runtime_config_payload(config))
 
 
+def _uploaded_yolo_model_path(handler: BaseHTTPRequestHandler) -> str:
+    form = cgi.FieldStorage(
+        fp=handler.rfile,
+        headers=handler.headers,
+        environ={
+            "REQUEST_METHOD": "POST",
+            "CONTENT_TYPE": handler.headers.get("Content-Type", ""),
+        },
+    )
+    field = form["model_file"] if "model_file" in form else None
+    if field is None or not getattr(field, "filename", ""):
+        raise ValueError("multipart form requires model_file")
+    filename = Path(str(field.filename)).name
+    if not filename.lower().endswith(".pt"):
+        raise ValueError("uploaded model must be a .pt file")
+    target_dir = Path("models")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / filename
+    tmp_path = target_dir / f".{target_path.stem}.upload_{int(time.time())}.pt"
+    with tmp_path.open("wb") as f:
+        while True:
+            chunk = field.file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+    try:
+        _validate_yolo_model_path(tmp_path)
+        tmp_path.replace(target_path)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    return _model_path_for_config(target_path)
+
+
+def _serve_yolo_model_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
+    if handler.command == "GET":
+        _json_response(handler, 200, _yolo_model_config_payload(config))
+        return
+
+    content_type = handler.headers.get("Content-Type", "")
+    if content_type.lower().startswith("multipart/form-data"):
+        model_path = _uploaded_yolo_model_path(handler)
+    else:
+        length = int(handler.headers.get("Content-Length") or 0)
+        if length <= 0:
+            _json_response(handler, 400, {"ok": False, "error": "request JSON body is required"})
+            return
+        data = json.loads(handler.rfile.read(length).decode("utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("request JSON body must be an object")
+        model_path = data.get("yolo_model") or data.get("model") or data.get("model_path")
+
+    _save_runtime_yolo_model(config, str(model_path))
+    _json_response(handler, 200, _yolo_model_config_payload(config))
+
+
 def _serve_object_sizes_config(handler: BaseHTTPRequestHandler, config: ServerConfig) -> None:
     if handler.command == "GET":
         _json_response(handler, 200, _object_size_config_payload(config))
@@ -748,7 +1018,7 @@ def _serve_object_sizes_config(handler: BaseHTTPRequestHandler, config: ServerCo
     data = json.loads(handler.rfile.read(length).decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError("request JSON body must be an object")
-    raw_sizes = data.get("object_sizes", data)
+    raw_sizes = data.get("object_infos") or data.get("cigarette_infos") or data.get("object_sizes") or data
     object_sizes = _validate_object_sizes(raw_sizes, base=_effective_object_sizes(config))
     if not object_sizes:
         _json_response(handler, 400, {"ok": False, "error": "provide at least one object size"})
@@ -877,7 +1147,6 @@ def _capture_head_images_persistent(host: str, wait_sec: float) -> tuple[np.ndar
     raise TimeoutError(f"no head camera frame after {float(wait_sec):.1f}s")
 
 
-
 def _build_pose_args(
     config: ServerConfig,
     out_dir: Path,
@@ -895,7 +1164,7 @@ def _build_pose_args(
         "--right-image",
         str(right_image),
         "--yolo-model",
-        config.yolo_model,
+        _effective_yolo_model(config),
         "--yolo-device",
         config.yolo_device,
         "--yolo-conf",
@@ -935,6 +1204,7 @@ def _build_pose_args(
     skip = {
         "focal_px", "fx", "fy", "cx", "cy", "dist_coeffs",
         "fx_right", "fy_right", "cx_right", "cy_right", "dist_coeffs_right",
+        "yolo_model", "model", "model_path",
     }
     for name, value in overrides.items():
         if name in skip:
@@ -1006,6 +1276,8 @@ def _object_box_size_for_result(config: ServerConfig, result: dict[str, Any]) ->
 
     return {
         "label": label or None,
+        "cigarette_id": str(size.get("cigarette_id") or _default_cigarette_id(label)) if label else None,
+        "name": str(size.get("name") or _default_cigarette_name(label)) if label else None,
         "length_mm": round(float(size["length_mm"]), 3),
         "width_mm": round(float(size["width_mm"]), 3),
         "height_mm": round(float(size["height_mm"]), 3),
@@ -1049,6 +1321,9 @@ def _g1d_visualization_data(result: dict[str, Any]) -> dict[str, Any]:
     server = result.get("server")
     if not isinstance(server, dict):
         server = {}
+    object_size = result.get("object_box_size_mm")
+    if not isinstance(object_size, dict):
+        object_size = {}
 
     return {
         "schema_version": 1,
@@ -1056,6 +1331,7 @@ def _g1d_visualization_data(result: dict[str, Any]) -> dict[str, Any]:
         "ok": bool(result.get("ok")),
         "yolo": {
             "label": result.get("selected_yolo_label"),
+            "display_name": object_size.get("name") or _label_display_name(result.get("selected_yolo_label")),
             "class_id": result.get("selected_yolo_class_id"),
             "confidence": result.get("selected_yolo_confidence"),
             "candidate_index": selected_yolo.get("selected_candidate_index"),
@@ -1192,17 +1468,20 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
         result["intrinsics_assumption"] = _effective_intrinsics(config)
     if not isinstance(result.get("intrinsics_assumption_right"), dict):
         result["intrinsics_assumption_right"] = _effective_intrinsics_right(config)
+    effective_model = _effective_yolo_model(config)
     server_info = {
         "resident": True,
         "pid": os.getpid(),
         "request_id": request_id,
         "elapsed_ms": elapsed_ms,
         "model_cache_size": len(YOLO_MODEL_CACHE),
-        "yolo_class_names": _yolo_class_names(config.yolo_model),
+        "yolo_model": effective_model,
+        "yolo_class_names": _yolo_class_names(effective_model),
     }
     result["server"] = server_info
     _enrich_result_object_size(config, result)
     result["object_size_config"] = _object_size_config_payload(config)
+    result["yolo_model_config"] = _yolo_model_config_payload(config)
     result["g1d_visualization"] = _g1d_visualization_data(result)
     LATEST_RESULT = result
     _remember_result(result)
@@ -1549,11 +1828,13 @@ def _candidate_table(candidates: Any) -> str:
     for item in candidates:
         if not isinstance(item, dict):
             continue
+        class_name = str(item.get("class_name") or "")
+        display_name = _label_display_name(class_name) or class_name
         rows.append(
             "<tr>"
             f"<td>{html_lib.escape(str(item.get('candidate_index')))}</td>"
             f"<td>{html_lib.escape(str(item.get('raw_yolo_index')))}</td>"
-            f"<td>{html_lib.escape(str(item.get('class_name')))}</td>"
+            f"<td>{html_lib.escape(display_name)}</td>"
             f"<td>{html_lib.escape(str(item.get('confidence')))}</td>"
             f"<td>{html_lib.escape(str(item.get('score')))}</td>"
             f"<td>{html_lib.escape('是' if item.get('matches_label_filter', True) else '否')}</td>"
@@ -1641,7 +1922,11 @@ def _key_summary_html(payload: dict[str, Any]) -> str:
     if not isinstance(near_target, dict):
         near_target = {}
 
-    label = payload.get("selected_yolo_label") or "-"
+    raw_label = payload.get("selected_yolo_label")
+    box_size = payload.get("object_box_size_mm")
+    if not isinstance(box_size, dict):
+        box_size = {}
+    label = box_size.get("name") or _label_display_name(raw_label) or "-"
     confidence = payload.get("selected_yolo_confidence")
     selected = _orientation_cn(payload.get("selected_orientation"))
     camera_angle = _nested(alignment, "camera_to_vertical_deg")
@@ -1824,11 +2109,60 @@ def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
     )
 
 
+def _debug_yolo_model_controls_html(payload: dict[str, Any]) -> str:
+    config_data = payload.get("yolo_model_config")
+    if not isinstance(config_data, dict):
+        config_data = {}
+    server = payload.get("server")
+    if not isinstance(server, dict):
+        server = {}
+    effective_model = str(config_data.get("effective_model") or server.get("yolo_model") or "")
+    available = config_data.get("available_models")
+    if not isinstance(available, list):
+        available = [effective_model] if effective_model else []
+    class_names = config_data.get("yolo_class_names") or server.get("yolo_class_names")
+    class_count = len(class_names) if isinstance(class_names, list) else 0
+
+    options: list[str] = []
+    seen: set[str] = set()
+    for item in available:
+        value = str(item)
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        selected = " selected" if value == effective_model else ""
+        options.append(
+            f'<option value="{html_lib.escape(value, quote=True)}"{selected}>{html_lib.escape(Path(value).name)}</option>'
+        )
+
+    return f"""
+  <section class="debug-yolo-model-panel">
+    <div class="debug-yolo-model-main">
+      <strong>YOLO 模型</strong>
+      <span>当前：{html_lib.escape(effective_model or "-")}，类别 {class_count} 个</span>
+    </div>
+    <div class="debug-yolo-model-controls">
+      <select id="debugYoloModelSelect">{''.join(options)}</select>
+      <input id="debugYoloModelPath" type="text" value="{html_lib.escape(effective_model, quote=True)}" placeholder="models/xxx.pt">
+      <button id="debugSaveYoloModel" class="button primary-alt-button" type="button">切换模型</button>
+      <input id="debugYoloModelFile" type="file" accept=".pt">
+      <button id="debugUploadYoloModel" class="button primary-button" type="button">上传并切换</button>
+      <span id="debugYoloModelStatus"></span>
+    </div>
+  </section>
+"""
+
+
 def _debug_object_size_controls_html(payload: dict[str, Any]) -> str:
     config_data = payload.get("object_size_config")
     if not isinstance(config_data, dict):
         config_data = {}
-    sizes = config_data.get("object_sizes") or config_data.get("effective_defaults")
+    sizes = (
+        config_data.get("object_infos")
+        or config_data.get("cigarette_infos")
+        or config_data.get("object_sizes")
+        or config_data.get("effective_defaults")
+    )
     if not isinstance(sizes, dict) or not sizes:
         sizes = {"XiongMao": BUILTIN_OBJECT_SIZES_MM.get("XiongMao", DEFAULT_OBJECT_SIZE_MM)}
 
@@ -1844,11 +2178,15 @@ def _debug_object_size_controls_html(payload: dict[str, Any]) -> str:
             height_mm = float(raw_size.get("height_mm", DEFAULT_OBJECT_SIZE_MM["height_mm"]))
         except Exception:
             continue
+        cigarette_id = str(raw_size.get("cigarette_id") or raw_size.get("product_id") or _default_cigarette_id(label))
+        name = str(raw_size.get("name") or raw_size.get("display_name") or _default_cigarette_name(label))
         selected_class = " selected-object-size-row" if label == selected_label else ""
         rows.append(
             (
                 f'<tr class="{selected_class}" data-object-size-row data-label="{html_lib.escape(label)}">'
                 f"<td><strong>{html_lib.escape(label)}</strong></td>"
+                f'<td><input data-size-field="cigarette_id" type="text" value="{html_lib.escape(cigarette_id, quote=True)}"></td>'
+                f'<td><input data-size-field="name" type="text" value="{html_lib.escape(name, quote=True)}"></td>'
                 f'<td><input data-size-field="length_mm" type="number" min="1" step="0.1" value="{length_mm:.1f}"></td>'
                 f'<td><input data-size-field="width_mm" type="number" min="1" step="0.1" value="{width_mm:.1f}"></td>'
                 f'<td><input data-size-field="height_mm" type="number" min="1" step="0.1" value="{height_mm:.1f}"></td>'
@@ -1859,18 +2197,18 @@ def _debug_object_size_controls_html(payload: dict[str, Any]) -> str:
     return (
         '<details class="debug-object-sizes-panel">'
         '<summary class="debug-object-sizes-title">'
-        '<strong>烟盒尺寸配置</strong>'
-        '<span>展开后可按 YOLO 标签修改长/宽/高</span>'
+        '<strong>烟盒信息配置</strong>'
+        '<span>展开后可按 YOLO id 修改名称、长、宽、厚度</span>'
         "</summary>"
-        '<div class="debug-object-sizes-note">长/宽参与 PnP 坐标计算；高/厚度用于 18085 的 3D 展示。</div>'
+        '<div class="debug-object-sizes-note">名称用于页面显示；长/宽参与 PnP 坐标计算；高/厚度用于 18085 的 3D 展示。</div>'
         '<div class="debug-object-sizes-table-wrap">'
         '<table class="debug-object-sizes-table">'
-        "<thead><tr><th>YOLO 标签</th><th>长 mm</th><th>宽 mm</th><th>高/厚 mm</th></tr></thead>"
+        "<thead><tr><th>YOLO id</th><th>烟 ID</th><th>烟名称</th><th>长 mm</th><th>宽 mm</th><th>高/厚 mm</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody>"
         "</table>"
         "</div>"
         '<div class="debug-object-sizes-actions">'
-        '<button id="debugSaveObjectSizes" class="button primary-alt-button" type="button">保存尺寸配置</button>'
+        '<button id="debugSaveObjectSizes" class="button primary-alt-button" type="button">保存烟盒信息</button>'
         '<span id="debugObjectSizesStatus"></span>'
         "</div>"
         "</details>"
@@ -1953,7 +2291,7 @@ def _g1d_visualization_table(payload: dict[str, Any]) -> str:
         _visualization_row(
             "YOLO",
             "选中目标",
-            f"{yolo.get('label') or '-'} / conf {_fmt_number(yolo.get('confidence'), '', 3)}",
+            f"{yolo.get('display_name') or yolo.get('label') or '-'} / conf {_fmt_number(yolo.get('confidence'), '', 3)}",
             "当前用于 PnP 和相对位置计算的那个 mask",
         ),
         _visualization_row(
@@ -2093,7 +2431,7 @@ def _debug_label_select_html(payload: dict[str, Any]) -> str:
     labels = [str(item) for item in model_class_names if str(item)]
     if requested_label and requested_label not in labels:
         labels.append(requested_label)
-    label_choices = [("", "自动"), *[(label, label) for label in labels]]
+    label_choices = [("", "自动"), *[(label, _payload_label_display_name(payload, label) or label) for label in labels]]
 
     options = []
     for value, text in label_choices:
@@ -2113,7 +2451,7 @@ def _debug_label_select_html(payload: dict[str, Any]) -> str:
 
 def _g1d_adjust_controls_html(payload: dict[str, Any]) -> str:
     requested_label = str(payload.get("requested_yolo_label") or "")
-    selected_label_text = html_lib.escape(requested_label or "自动")
+    selected_label_text = html_lib.escape(_payload_label_display_name(payload, requested_label) if requested_label else "自动")
     selected_label_json = json.dumps(requested_label, ensure_ascii=False).replace("</", "<\\/")
     return f"""
   <section class="g1d-adjust-panel">
@@ -2251,6 +2589,13 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .debug-intrinsics-panel label {{ display: grid; gap: 3px; color: #52606d; font-size: 12px; font-weight: 700; }}
     .debug-intrinsics-panel input {{ width: 84px; padding: 6px 8px; border: 1px solid #8795a1; font: inherit; background: #fff; color: #102a43; }}
     .debug-intrinsics-panel span {{ color: #627d98; font-size: 12px; }}
+    .debug-yolo-model-panel {{ margin: 10px 0 16px; padding: 10px; border: 1px solid #d9e2ec; border-radius: 6px; background: #f8fbff; }}
+    .debug-yolo-model-main {{ display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }}
+    .debug-yolo-model-main strong {{ color: #102a43; }}
+    .debug-yolo-model-main span, .debug-yolo-model-controls span {{ color: #627d98; font-size: 12px; }}
+    .debug-yolo-model-controls {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+    .debug-yolo-model-controls select, .debug-yolo-model-controls input[type="text"] {{ min-width: 220px; padding: 7px 9px; border: 1px solid #8795a1; font: inherit; background: #fff; color: #102a43; }}
+    .debug-yolo-model-controls input[type="file"] {{ max-width: 260px; }}
     .debug-object-sizes-panel {{ margin: 10px 0 16px; padding: 10px; border: 1px solid #d9e2ec; border-radius: 6px; background: #fffdf7; }}
     .debug-object-sizes-title {{ display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; cursor: pointer; }}
     .debug-object-sizes-title strong {{ color: #102a43; }}
@@ -2258,6 +2603,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     .debug-object-sizes-note {{ color: #627d98; font-size: 12px; margin: 8px 0; }}
     .debug-object-sizes-table-wrap {{ overflow-x: auto; }}
     .debug-object-sizes-table input {{ width: 94px; padding: 6px 8px; border: 1px solid #8795a1; font: inherit; background: #fff; color: #102a43; }}
+    .debug-object-sizes-table input[type="text"] {{ width: 180px; }}
     .debug-object-sizes-table .selected-object-size-row td {{ background: #fff7cc; }}
     .debug-object-sizes-actions {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }}
     .summary-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 14px 0 18px; }}
@@ -2298,6 +2644,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
     <a id="debugPoseLink" class="button" href="{pose_href}">完整 JSON</a>
     <a id="debugXyzLink" class="button" href="{xyz_href}">坐标 JSON</a>
   </header>
+  {_debug_yolo_model_controls_html(payload)}
   {_debug_intrinsics_controls_html(payload)}
   {_debug_object_size_controls_html(payload)}
   <script>
@@ -2316,6 +2663,12 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       const saveDefaultButton = document.getElementById("debugSaveDefaultIntrinsics");
       const saveStatus = document.getElementById("debugIntrinsicsSaveStatus");
       const currentIntrinsics = document.getElementById("debugIntrinsicsCurrent");
+      const yoloModelSelect = document.getElementById("debugYoloModelSelect");
+      const yoloModelPath = document.getElementById("debugYoloModelPath");
+      const saveYoloModelButton = document.getElementById("debugSaveYoloModel");
+      const uploadYoloModelButton = document.getElementById("debugUploadYoloModel");
+      const yoloModelFile = document.getElementById("debugYoloModelFile");
+      const yoloModelStatus = document.getElementById("debugYoloModelStatus");
       const objectSizeRows = Array.from(document.querySelectorAll("[data-object-size-row]"));
       const saveObjectSizesButton = document.getElementById("debugSaveObjectSizes");
       const objectSizesStatus = document.getElementById("debugObjectSizesStatus");
@@ -2375,7 +2728,9 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         const label = select && select.value ? `label=${{encodeURIComponent(select.value)}}&` : "";
         const intrinsics = readIntrinsicsQuery();
         const adjustLabel = document.getElementById("g1dAdjustCurrentLabel");
-        if (adjustLabel) adjustLabel.textContent = select && select.value ? select.value : "自动";
+        if (adjustLabel) adjustLabel.textContent = select && select.value
+          ? (select.options[select.selectedIndex]?.textContent || select.value)
+          : "自动";
         const t = Date.now();
         if (runAgain) runAgain.href = `/debug?${{label}}${{intrinsics}}t=${{t}}`;
         if (pose) pose.href = `/pose?${{label}}${{intrinsics}}t=${{t}}`;
@@ -2488,6 +2843,64 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           saveRightButton.disabled = false;
         }}
       }};
+      const reloadDebugPage = () => {{
+        const url = new URL(window.location.href);
+        url.searchParams.set("t", String(Date.now()));
+        window.location.href = url.toString();
+      }};
+      const saveYoloModel = async () => {{
+        if (!saveYoloModelButton || !yoloModelPath) return;
+        const yolo_model = yoloModelPath.value.trim();
+        if (!yolo_model) {{
+          if (yoloModelStatus) yoloModelStatus.textContent = "请先选择或填写模型路径";
+          return;
+        }}
+        saveYoloModelButton.disabled = true;
+        if (yoloModelStatus) yoloModelStatus.textContent = "切换中...";
+        try {{
+          const res = await fetch("/config/yolo_model", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ yolo_model }}),
+            cache: "no-store",
+          }});
+          const payload = await res.json();
+          if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
+          if (yoloModelStatus) yoloModelStatus.textContent = "已切换，正在刷新类别";
+          reloadDebugPage();
+        }} catch (err) {{
+          if (yoloModelStatus) yoloModelStatus.textContent = `切换失败: ${{err}}`;
+        }} finally {{
+          saveYoloModelButton.disabled = false;
+        }}
+      }};
+      const uploadYoloModel = async () => {{
+        if (!uploadYoloModelButton || !yoloModelFile) return;
+        const file = yoloModelFile.files && yoloModelFile.files[0];
+        if (!file) {{
+          if (yoloModelStatus) yoloModelStatus.textContent = "请选择 .pt 模型文件";
+          return;
+        }}
+        const form = new FormData();
+        form.append("model_file", file);
+        uploadYoloModelButton.disabled = true;
+        if (yoloModelStatus) yoloModelStatus.textContent = "上传并加载中...";
+        try {{
+          const res = await fetch("/config/yolo_model", {{
+            method: "POST",
+            body: form,
+            cache: "no-store",
+          }});
+          const payload = await res.json();
+          if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
+          if (yoloModelStatus) yoloModelStatus.textContent = "已上传并切换，正在刷新类别";
+          reloadDebugPage();
+        }} catch (err) {{
+          if (yoloModelStatus) yoloModelStatus.textContent = `上传失败: ${{err}}`;
+        }} finally {{
+          uploadYoloModelButton.disabled = false;
+        }}
+      }};
       const readObjectSizesObject = () => {{
         const object_sizes = {{}};
         for (const row of objectSizeRows) {{
@@ -2496,6 +2909,10 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           const entry = {{}};
           for (const input of Array.from(row.querySelectorAll("[data-size-field]"))) {{
             const field = input.dataset.sizeField;
+            if (field === "name" || field === "cigarette_id") {{
+              entry[field] = input.value.trim() || label;
+              continue;
+            }}
             const value = Number(input.value);
             if (!field || !Number.isFinite(value) || value <= 0) {{
               throw new Error(`${{label}} 的 ${{field || "尺寸"}} 必须是正数`);
@@ -2520,7 +2937,7 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           }});
           const payload = await res.json();
           if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
-          if (objectSizesStatus) objectSizesStatus.textContent = "已保存，下一次 /debug、/xyz、/pose 计算生效";
+          if (objectSizesStatus) objectSizesStatus.textContent = "烟盒信息已保存，下一次 /debug、/xyz、/pose 计算生效";
         }} catch (err) {{
           if (objectSizesStatus) objectSizesStatus.textContent = `保存失败: ${{err}}`;
         }} finally {{
@@ -2528,8 +2945,15 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         }}
       }};
       if (select) select.addEventListener("change", updateLinks);
+      if (yoloModelSelect && yoloModelPath) {{
+        yoloModelSelect.addEventListener("change", () => {{
+          yoloModelPath.value = yoloModelSelect.value || "";
+        }});
+      }}
       for (const input of intrinsicInputs) input.addEventListener("input", updateLinks);
       for (const input of distInputs) input.addEventListener("input", updateLinks);
+      if (saveYoloModelButton) saveYoloModelButton.addEventListener("click", saveYoloModel);
+      if (uploadYoloModelButton) uploadYoloModelButton.addEventListener("click", uploadYoloModel);
       if (saveObjectSizesButton) saveObjectSizesButton.addEventListener("click", saveObjectSizes);
       if (saveCalibratedButton) saveCalibratedButton.addEventListener("click", async () => {{
         setIntrinsics(calibratedIntrinsics);
@@ -2579,6 +3003,7 @@ def _serve_debug_dashboard(
 
 
 def _health_payload(config: ServerConfig) -> dict[str, Any]:
+    effective_model = _effective_yolo_model(config)
     resolved_device = resolve_yolo_device(config.yolo_device)
     cuda_available: bool | None = None
     torch_cuda: str | None = None
@@ -2596,7 +3021,9 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "pid": os.getpid(),
         "bind": config.bind,
         "port": config.port,
-        "yolo_model": config.yolo_model,
+        "yolo_model": effective_model,
+        "yolo_model_startup_default": config.yolo_model,
+        "yolo_model_runtime_default": _runtime_yolo_model(),
         "requested_device": config.yolo_device,
         "resolved_device": resolved_device,
         "intrinsics_defaults": _effective_intrinsics(config),
@@ -2608,7 +3035,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "stereo_available": _effective_stereo(config) is not None,
         "object_sizes_runtime_defaults": _runtime_object_sizes(),
         "object_sizes_effective_defaults": _effective_object_sizes(config),
-        "yolo_class_names": _yolo_class_names(config.yolo_model),
+        "yolo_class_names": _yolo_class_names(effective_model),
         "cuda_available": cuda_available,
         "torch_cuda": torch_cuda,
         "model_cache_size": len(YOLO_MODEL_CACHE),
@@ -2617,6 +3044,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
             "/config/intrinsics",
             "/config/intrinsics_right",
             "/config/stereo",
+            "/config/yolo_model",
             "/config/object_sizes",
             "/pose",
             "/xyz",
@@ -2645,7 +3073,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
 
 
 def _warmup(config: ServerConfig) -> None:
-    resolved_model = resolve_model_path(config.yolo_model)
+    resolved_model = resolve_model_path(_effective_yolo_model(config))
     model = get_yolo_model(resolved_model, task="segment")
     _ensure_torchvision_nms()
     blank = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -2694,6 +3122,9 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/config/stereo":
                     _serve_stereo_config(self, config)
+                    return
+                if path == "/config/yolo_model":
+                    _serve_yolo_model_config(self, config)
                     return
                 if path == "/config/object_sizes":
                     _serve_object_sizes_config(self, config)
