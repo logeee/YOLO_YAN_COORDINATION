@@ -29,6 +29,8 @@ import cv2
 import numpy as np
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent
+MODELS_DIR = REPO_ROOT / "models"
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
@@ -544,8 +546,32 @@ def _write_runtime_config_data(config: ServerConfig, payload: dict[str, Any]) ->
     tmp.replace(path)
 
 
+def _resolve_yolo_model_path(model_path: str | Path) -> Path:
+    raw_path = Path(model_path).expanduser()
+    candidates: list[Path] = []
+    if raw_path.is_absolute():
+        candidates.append(raw_path)
+    else:
+        candidates.extend(
+            [
+                REPO_ROOT / raw_path,
+                Path.cwd() / raw_path,
+                SCRIPT_DIR / raw_path,
+            ]
+        )
+    candidates.append(resolve_model_path(raw_path))
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return candidates[0].resolve() if candidates else raw_path.resolve()
+
+
 def _model_path_for_config(model_path: str | Path) -> str:
-    resolved = resolve_model_path(model_path)
+    resolved = _resolve_yolo_model_path(model_path)
+    try:
+        return resolved.relative_to(REPO_ROOT).as_posix()
+    except Exception:
+        pass
     try:
         return resolved.relative_to(Path.cwd().resolve()).as_posix()
     except Exception:
@@ -558,7 +584,7 @@ def _validate_yolo_model_path(model_path: Any) -> str:
         raise ValueError("yolo_model is required")
     if not raw.lower().endswith(".pt"):
         raise ValueError("YOLO model must be a .pt file")
-    resolved = resolve_model_path(raw)
+    resolved = _resolve_yolo_model_path(raw)
     if not resolved.exists():
         raise ValueError(f"YOLO model does not exist: {raw}")
     # Load once here so a broken/non-segmentation model fails before becoming default.
@@ -578,10 +604,18 @@ def _available_yolo_models(config: ServerConfig) -> list[str]:
                 value = str(candidate)
             if value not in values:
                 values.append(value)
-    for root in (Path("models"), Path.cwd() / "models"):
-        if not root.exists():
+    model_roots = [MODELS_DIR, Path.cwd() / "models", Path("models")]
+    seen_roots: set[str] = set()
+    for root in model_roots:
+        try:
+            resolved_root = root.resolve()
+        except Exception:
+            resolved_root = root
+        root_key = str(resolved_root)
+        if root_key in seen_roots or not resolved_root.exists():
             continue
-        for path in sorted(root.glob("*.pt")):
+        seen_roots.add(root_key)
+        for path in sorted(resolved_root.glob("*.pt")):
             try:
                 value = _model_path_for_config(path)
             except Exception:
@@ -963,7 +997,7 @@ def _uploaded_yolo_model_path(handler: BaseHTTPRequestHandler) -> str:
     filename = Path(str(field.filename)).name
     if not filename.lower().endswith(".pt"):
         raise ValueError("uploaded model must be a .pt file")
-    target_dir = Path("models")
+    target_dir = MODELS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / filename
     tmp_path = target_dir / f".{target_path.stem}.upload_{int(time.time())}.pt"
@@ -1107,7 +1141,7 @@ def _get_image_client(host: str) -> Any:
 
 
 def _yolo_class_names(model_path: str | Path) -> list[str]:
-    resolved_model = resolve_model_path(model_path)
+    resolved_model = _resolve_yolo_model_path(model_path)
     cache_key = str(resolved_model)
     if cache_key in MODEL_CLASS_NAMES_CACHE:
         return list(MODEL_CLASS_NAMES_CACHE[cache_key])
@@ -3073,7 +3107,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
 
 
 def _warmup(config: ServerConfig) -> None:
-    resolved_model = resolve_model_path(_effective_yolo_model(config))
+    resolved_model = _resolve_yolo_model_path(_effective_yolo_model(config))
     model = get_yolo_model(resolved_model, task="segment")
     _ensure_torchvision_nms()
     blank = np.zeros((480, 640, 3), dtype=np.uint8)
