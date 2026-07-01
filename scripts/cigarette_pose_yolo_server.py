@@ -405,13 +405,35 @@ def _runtime_intrinsics() -> dict[str, float] | None:
         return dict(RUNTIME_INTRINSICS) if RUNTIME_INTRINSICS is not None else None
 
 
-def _runtime_yolo_model() -> str | None:
+def _runtime_yolo_model_from_disk(config: ServerConfig) -> str | None:
+    raw = _read_runtime_config_data(config).get("yolo_model")
+    if not raw:
+        return None
+    try:
+        resolved = _resolve_yolo_model_path(raw)
+        if resolved.exists():
+            return _model_path_for_config(resolved)
+    except Exception:
+        return None
+    return None
+
+
+def _runtime_yolo_model(config: ServerConfig | None = None) -> str | None:
+    global RUNTIME_YOLO_MODEL
     with RUNTIME_CONFIG_LOCK:
-        return str(RUNTIME_YOLO_MODEL) if RUNTIME_YOLO_MODEL else None
+        memory_value = str(RUNTIME_YOLO_MODEL) if RUNTIME_YOLO_MODEL else None
+    if config is None:
+        return memory_value
+    disk_value = _runtime_yolo_model_from_disk(config)
+    if disk_value and disk_value != memory_value:
+        with RUNTIME_CONFIG_LOCK:
+            RUNTIME_YOLO_MODEL = disk_value
+        return disk_value
+    return disk_value or memory_value
 
 
 def _effective_yolo_model(config: ServerConfig) -> str:
-    return _runtime_yolo_model() or str(config.yolo_model)
+    return _runtime_yolo_model(config) or str(config.yolo_model)
 
 
 def _runtime_object_sizes() -> dict[str, dict[str, Any]] | None:
@@ -596,7 +618,7 @@ def _validate_yolo_model_path(model_path: Any) -> str:
 
 def _available_yolo_models(config: ServerConfig) -> list[str]:
     values: list[str] = []
-    for candidate in (config.yolo_model, _runtime_yolo_model()):
+    for candidate in (config.yolo_model, _runtime_yolo_model(config)):
         if candidate:
             try:
                 value = _model_path_for_config(candidate)
@@ -631,7 +653,7 @@ def _yolo_model_config_payload(config: ServerConfig) -> dict[str, Any]:
         "ok": True,
         "config_path": str(config.runtime_config_path),
         "startup_default": str(config.yolo_model),
-        "runtime_default": _runtime_yolo_model(),
+        "runtime_default": _runtime_yolo_model(config),
         "effective_model": effective_model,
         "available_models": _available_yolo_models(config),
         "yolo_class_names": _yolo_class_names(effective_model),
@@ -3058,7 +3080,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "port": config.port,
         "yolo_model": effective_model,
         "yolo_model_startup_default": config.yolo_model,
-        "yolo_model_runtime_default": _runtime_yolo_model(),
+        "yolo_model_runtime_default": _runtime_yolo_model(config),
         "requested_device": config.yolo_device,
         "resolved_device": resolved_device,
         "intrinsics_defaults": _effective_intrinsics(config),
