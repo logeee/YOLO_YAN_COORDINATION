@@ -54,6 +54,23 @@ DEFAULT_CAMERA_TO_VERTICAL_DEG = 47.6
 DEFAULT_CENTER_ABOVE_HEIGHT_MM = 100.0
 DEFAULT_BOX_HEAD_ABOVE_HEIGHT_MM = 100.0
 DEFAULT_BOX_HEAD_FRACTION_FROM_HEAD = 0.2
+CALIBRATED_LEFT_FOCAL_PX = 275.06
+CALIBRATED_LEFT_FX = 275.06
+CALIBRATED_LEFT_FY = 275.39
+CALIBRATED_LEFT_CX = 305.71
+CALIBRATED_LEFT_CY = 268.34
+CALIBRATED_LEFT_DIST_COEFFS = (0.05998239, -0.07112947, -0.00037432, 0.00015172, 0.01724672)
+CALIBRATED_RIGHT_FX = 274.29699860633724
+CALIBRATED_RIGHT_FY = 274.5716080713627
+CALIBRATED_RIGHT_CX = 289.7163405945703
+CALIBRATED_RIGHT_CY = 274.4892508669222
+CALIBRATED_RIGHT_DIST_COEFFS = (
+    0.06292257512401175,
+    -0.07717484464783685,
+    -0.000405354779537882,
+    -0.00006950375556195126,
+    0.019962308624586825,
+)
 
 # Physical top-face sizes used by YOLO class-aware PnP.
 # Values are (long side, short side) in meters.
@@ -68,18 +85,18 @@ class PoseConfig:
     long_side_m: float = 0.161
     short_side_m: float = 0.095
     orientation: str = "auto_by_stereo"
-    focal_px: float = 260.0
-    fx: float | None = None
-    fy: float | None = None
-    cx: float = 320.0
-    cy: float = 240.0
-    dist_coeffs: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0)
+    focal_px: float = CALIBRATED_LEFT_FOCAL_PX
+    fx: float | None = CALIBRATED_LEFT_FX
+    fy: float | None = CALIBRATED_LEFT_FY
+    cx: float = CALIBRATED_LEFT_CX
+    cy: float = CALIBRATED_LEFT_CY
+    dist_coeffs: tuple[float, ...] = CALIBRATED_LEFT_DIST_COEFFS
     # Right camera intrinsics; None means "mirror the left camera" for backward compatibility.
-    fx_right: float | None = None
-    fy_right: float | None = None
-    cx_right: float | None = None
-    cy_right: float | None = None
-    dist_coeffs_right: tuple[float, ...] | None = None
+    fx_right: float | None = CALIBRATED_RIGHT_FX
+    fy_right: float | None = CALIBRATED_RIGHT_FY
+    cx_right: float | None = CALIBRATED_RIGHT_CX
+    cy_right: float | None = CALIBRATED_RIGHT_CY
+    dist_coeffs_right: tuple[float, ...] | None = CALIBRATED_RIGHT_DIST_COEFFS
     # Stereo extrinsics (cv2.stereoCalibrate convention: X_right = R @ X_left + T,
     # T in millimetres). None means stereo triangulation is unavailable.
     stereo_R: tuple[float, ...] | None = None  # row-major 3x3 (9 values)
@@ -1522,24 +1539,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="auto_by_stereo",
         help="physical side assigned to the image top edge",
     )
-    parser.add_argument("--focal-px", type=float, default=260.0, help="fallback focal length if --fx/--fy are omitted")
-    parser.add_argument("--fx", type=float, help="left camera fx in pixels")
-    parser.add_argument("--fy", type=float, help="left camera fy in pixels")
-    parser.add_argument("--cx", type=float, default=320.0)
-    parser.add_argument("--cy", type=float, default=240.0)
+    parser.add_argument("--focal-px", type=float, default=CALIBRATED_LEFT_FOCAL_PX, help="fallback focal length if --fx/--fy are omitted")
+    parser.add_argument("--fx", type=float, default=CALIBRATED_LEFT_FX, help="left camera fx in pixels")
+    parser.add_argument("--fy", type=float, default=CALIBRATED_LEFT_FY, help="left camera fy in pixels")
+    parser.add_argument("--cx", type=float, default=CALIBRATED_LEFT_CX)
+    parser.add_argument("--cy", type=float, default=CALIBRATED_LEFT_CY)
     parser.add_argument(
         "--dist-coeffs",
-        default=None,
-        help="left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3; defaults to all zeros",
+        default=",".join(str(value) for value in CALIBRATED_LEFT_DIST_COEFFS),
+        help="left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3",
     )
-    parser.add_argument("--fx-right", type=float, help="right camera fx in pixels; defaults to the left fx")
-    parser.add_argument("--fy-right", type=float, help="right camera fy in pixels; defaults to the left fy")
-    parser.add_argument("--cx-right", type=float, help="right camera cx in pixels; defaults to the left cx")
-    parser.add_argument("--cy-right", type=float, help="right camera cy in pixels; defaults to the left cy")
+    parser.add_argument("--fx-right", type=float, default=CALIBRATED_RIGHT_FX, help="right camera fx in pixels")
+    parser.add_argument("--fy-right", type=float, default=CALIBRATED_RIGHT_FY, help="right camera fy in pixels")
+    parser.add_argument("--cx-right", type=float, default=CALIBRATED_RIGHT_CX, help="right camera cx in pixels")
+    parser.add_argument("--cy-right", type=float, default=CALIBRATED_RIGHT_CY, help="right camera cy in pixels")
     parser.add_argument(
         "--dist-coeffs-right",
-        default=None,
-        help="right camera distortion as comma-separated coeffs k1,k2,p1,p2,k3; defaults to the left distortion",
+        default=",".join(str(value) for value in CALIBRATED_RIGHT_DIST_COEFFS),
+        help="right camera distortion as comma-separated coeffs k1,k2,p1,p2,k3",
     )
     parser.add_argument(
         "--stereo-r",

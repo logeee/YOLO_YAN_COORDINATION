@@ -49,21 +49,21 @@ OUR: dict[str, Any] = {"enabled": False}
 # Intrinsics presets for the YOLO service's own mono-PnP (?fx&fy&cx&cy). The 3D
 # point depth/position depends on these, so /api/xyz fetches the service twice
 # (old vs new intrinsics) to compare intrinsic AND extrinsic effects together.
-OLD_INTRINSICS: dict[str, float] = {"fx": 260.0, "fy": 260.0, "cx": 320.0, "cy": 240.0}        # PnP 假设值(原始)
+OLD_INTRINSICS: dict[str, float] = {"fx": 275.06, "fy": 275.39, "cx": 305.71, "cy": 268.34}        # historical alias; old preset retired
 # NEW intrinsics are loaded from a calibration file at startup (see main() ->
 # _load_left_intrinsics_file). These hard-coded numbers are only a fallback used
 # when the file is missing; they mirror the previous 20260615172934 calibration.
-NEW_INTRINSICS: dict[str, float] = {"fx": 271.24, "fy": 271.22, "cx": 323.97, "cy": 249.90}
+NEW_INTRINSICS: dict[str, float] = {"fx": 275.06, "fy": 275.39, "cx": 305.71, "cy": 268.34}
 # RIGHT-camera NEW intrinsics, sent as fx_right/fy_right/cx_right/cy_right so the
 # service also returns a right-eye 3D point under our calibration.
-NEW_INTRINSICS_RIGHT: dict[str, float] = {"fx": 271.24, "fy": 271.22, "cx": 323.97, "cy": 249.90}
+NEW_INTRINSICS_RIGHT: dict[str, float] = {"fx": 274.29699860633724, "fy": 274.5716080713627, "cx": 289.7163405945703, "cy": 274.4892508669222}
 
 # NEW distortion coefficients (k1,k2,p1,p2,k3), loaded from the same calibration
 # file as NEW_INTRINSICS. ONLY the distortion-corrected combos send these to the
 # YOLO service; every other combo sends ZERO_DIST so the service's mono-PnP does
 # NOT undistort, keeping the intrinsics/extrinsics-only comparison clean.
-NEW_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
-NEW_DIST_RIGHT: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
+NEW_DIST: list[float] = [0.05998239, -0.07112947, -0.00037432, 0.00015172, 0.01724672]
+NEW_DIST_RIGHT: list[float] = [0.06292257512401175, -0.07717484464783685, -0.000405354779537882, -0.00006950375556195126, 0.019962308624586825]
 ZERO_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Default calibration files on this machine. NEW intrinsics (grid) come from the

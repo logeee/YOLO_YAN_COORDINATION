@@ -26,6 +26,12 @@ from typing import Any
 import cv2
 import numpy as np
 
+CALIBRATED_LEFT_FOCAL_PX = 275.06
+CALIBRATED_LEFT_FX = 275.06
+CALIBRATED_LEFT_FY = 275.39
+CALIBRATED_LEFT_CX = 305.71
+CALIBRATED_LEFT_CY = 268.34
+
 
 @dataclass
 class Detection:
@@ -787,11 +793,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-sec", type=float, default=5.0)
     parser.add_argument("--object-width-m", type=float, default=0.149)
     parser.add_argument("--object-height-m", type=float, default=0.093)
-    parser.add_argument("--focal-px", type=float, default=260.0, help="fallback head camera focal length in pixels")
-    parser.add_argument("--fx", type=float, help="head camera fx in pixels; defaults to --focal-px")
-    parser.add_argument("--fy", type=float, help="head camera fy in pixels; defaults to --focal-px")
-    parser.add_argument("--cx", type=float, default=320.0)
-    parser.add_argument("--cy", type=float, default=240.0)
+    parser.add_argument("--focal-px", type=float, default=CALIBRATED_LEFT_FOCAL_PX, help="fallback head camera focal length in pixels")
+    parser.add_argument("--fx", type=float, default=CALIBRATED_LEFT_FX, help="head camera fx in pixels")
+    parser.add_argument("--fy", type=float, default=CALIBRATED_LEFT_FY, help="head camera fy in pixels")
+    parser.add_argument("--cx", type=float, default=CALIBRATED_LEFT_CX)
+    parser.add_argument("--cy", type=float, default=CALIBRATED_LEFT_CY)
     parser.add_argument("--left-roi", type=parse_roi, default=None, help="optional x1,y1,x2,y2")
     parser.add_argument("--right-roi", type=parse_roi, default=None, help="optional x1,y1,x2,y2")
     parser.add_argument("--min-red-fraction", type=float, default=0.12)

@@ -46,6 +46,25 @@ from yolo_topface_detector import (  # noqa: E402
     resolve_yolo_device,
 )
 
+CALIBRATED_LEFT_FOCAL_PX = 275.06
+CALIBRATED_LEFT_FX = 275.06
+CALIBRATED_LEFT_FY = 275.39
+CALIBRATED_LEFT_CX = 305.71
+CALIBRATED_LEFT_CY = 268.34
+CALIBRATED_LEFT_DIST_COEFFS = (0.05998239, -0.07112947, -0.00037432, 0.00015172, 0.01724672)
+
+CALIBRATED_RIGHT_FX = 274.29699860633724
+CALIBRATED_RIGHT_FY = 274.5716080713627
+CALIBRATED_RIGHT_CX = 289.7163405945703
+CALIBRATED_RIGHT_CY = 274.4892508669222
+CALIBRATED_RIGHT_DIST_COEFFS = (
+    0.06292257512401175,
+    -0.07717484464783685,
+    -0.000405354779537882,
+    -0.00006950375556195126,
+    0.019962308624586825,
+)
+
 
 @dataclass(frozen=True)
 class ServerConfig:
@@ -57,17 +76,17 @@ class ServerConfig:
     yolo_conf: float = 0.15
     yolo_imgsz: int = 640
     yolo_mask_threshold: float = 0.5
-    focal_px: float = 260.0
-    fx: float | None = None
-    fy: float | None = None
-    cx: float = 320.0
-    cy: float = 240.0
-    dist_coeffs: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0)
-    fx_right: float | None = None
-    fy_right: float | None = None
-    cx_right: float | None = None
-    cy_right: float | None = None
-    dist_coeffs_right: tuple[float, ...] | None = None
+    focal_px: float = CALIBRATED_LEFT_FOCAL_PX
+    fx: float | None = CALIBRATED_LEFT_FX
+    fy: float | None = CALIBRATED_LEFT_FY
+    cx: float = CALIBRATED_LEFT_CX
+    cy: float = CALIBRATED_LEFT_CY
+    dist_coeffs: tuple[float, ...] = CALIBRATED_LEFT_DIST_COEFFS
+    fx_right: float | None = CALIBRATED_RIGHT_FX
+    fy_right: float | None = CALIBRATED_RIGHT_FY
+    cx_right: float | None = CALIBRATED_RIGHT_CX
+    cy_right: float | None = CALIBRATED_RIGHT_CY
+    dist_coeffs_right: tuple[float, ...] | None = CALIBRATED_RIGHT_DIST_COEFFS
     stereo_R: tuple[float, ...] | None = None
     stereo_T: tuple[float, ...] | None = None
     runtime_config_path: Path = Path("config/cigarette_pose_runtime.json")
@@ -297,18 +316,18 @@ def _server_intrinsics(config: ServerConfig) -> dict[str, Any]:
 
 def _validate_intrinsics(values: dict[str, Any], base: dict[str, Any] | None = None) -> dict[str, Any]:
     base_values = base or {
-        "focal_px": 260.0,
-        "fx": 260.0,
-        "fy": 260.0,
-        "cx": 320.0,
-        "cy": 240.0,
-        "dist_coeffs": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "focal_px": CALIBRATED_LEFT_FOCAL_PX,
+        "fx": CALIBRATED_LEFT_FX,
+        "fy": CALIBRATED_LEFT_FY,
+        "cx": CALIBRATED_LEFT_CX,
+        "cy": CALIBRATED_LEFT_CY,
+        "dist_coeffs": list(CALIBRATED_LEFT_DIST_COEFFS),
     }
-    focal_px = float(values.get("focal_px", base_values.get("focal_px", 260.0)))
+    focal_px = float(values.get("focal_px", base_values.get("focal_px", CALIBRATED_LEFT_FOCAL_PX)))
     fx = float(values.get("fx", focal_px if "focal_px" in values else base_values.get("fx", focal_px)))
     fy = float(values.get("fy", focal_px if "focal_px" in values else base_values.get("fy", focal_px)))
-    cx = float(values.get("cx", base_values.get("cx", 320.0)))
-    cy = float(values.get("cy", base_values.get("cy", 240.0)))
+    cx = float(values.get("cx", base_values.get("cx", CALIBRATED_LEFT_CX)))
+    cy = float(values.get("cy", base_values.get("cy", CALIBRATED_LEFT_CY)))
     if fx <= 0.0 or fy <= 0.0 or focal_px <= 0.0:
         raise ValueError("focal_px/fx/fy must be positive")
     if "dist_coeffs" in values:
@@ -856,6 +875,7 @@ def _capture_head_images_persistent(host: str, wait_sec: float) -> tuple[np.ndar
             return frame[:, : width // 2].copy(), frame[:, width // 2 :].copy()
         time.sleep(0.02)
     raise TimeoutError(f"no head camera frame after {float(wait_sec):.1f}s")
+
 
 
 def _build_pose_args(
@@ -1665,9 +1685,9 @@ def _debug_intrinsics_from_payload(payload: dict[str, Any]) -> dict[str, float]:
         except Exception:
             return float(fallback)
 
-    focal = read_float("focal_px", 260.0)
+    focal = read_float("focal_px", CALIBRATED_LEFT_FOCAL_PX)
     raw_dist = intrinsics.get("dist_coeffs")
-    dist_coeffs = [0.0, 0.0, 0.0, 0.0, 0.0]
+    dist_coeffs = list(CALIBRATED_LEFT_DIST_COEFFS)
     if isinstance(raw_dist, (list, tuple)):
         for idx in range(min(5, len(raw_dist))):
             try:
@@ -1677,8 +1697,8 @@ def _debug_intrinsics_from_payload(payload: dict[str, Any]) -> dict[str, float]:
     return {
         "fx": read_float("fx", focal),
         "fy": read_float("fy", focal),
-        "cx": read_float("cx", 320.0),
-        "cy": read_float("cy", 240.0),
+        "cx": read_float("cx", CALIBRATED_LEFT_CX),
+        "cy": read_float("cy", CALIBRATED_LEFT_CY),
         "dist_coeffs": dist_coeffs,
     }
 
@@ -1791,12 +1811,11 @@ def _debug_intrinsics_controls_html(payload: dict[str, Any]) -> str:
         '<span id="debugIntrinsicsSaveStatus"></span>'
         "</div>"
         '<details class="debug-intrinsics-advanced">'
-        '<summary>高级：手动修改或恢复旧默认</summary>'
+        '<summary>高级：手动修改标定内参</summary>'
         '<div class="debug-intrinsics-fields">'
         f"{inputs}"
         f"{dist_inputs}"
         '<button id="debugSaveDefaultIntrinsics" class="button primary-alt-button" type="button">保存手动值为 API 默认</button>'
-        '<button id="debugUseDefaultIntrinsics" class="button" type="button">恢复旧默认 260</button>'
         '<span>高级设置保存后，后续 /xyz、/pose 不带参数也会使用这里的默认值。</span>'
         "</div>"
         "</details>"
@@ -2294,7 +2313,6 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       const saveRightButton = document.getElementById("debugSaveRightIntrinsics");
       const rightStatus = document.getElementById("debugRightIntrinsicsStatus");
       const saveCalibratedButton = document.getElementById("debugSaveCalibratedIntrinsics");
-      const defaultButton = document.getElementById("debugUseDefaultIntrinsics");
       const saveDefaultButton = document.getElementById("debugSaveDefaultIntrinsics");
       const saveStatus = document.getElementById("debugIntrinsicsSaveStatus");
       const currentIntrinsics = document.getElementById("debugIntrinsicsCurrent");
@@ -2307,13 +2325,6 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         cx: "305.71",
         cy: "268.34",
         dist_coeffs: ["0.05998239", "-0.07112947", "-0.00037432", "0.00015172", "0.01724672"],
-      }};
-      const oldDefaultIntrinsics = {{
-        fx: "260.00",
-        fy: "260.00",
-        cx: "320.00",
-        cy: "240.00",
-        dist_coeffs: ["0", "0", "0", "0", "0"],
       }};
       const readIntrinsicsObject = () => {{
         const values = {{}};
@@ -2523,10 +2534,6 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       if (saveCalibratedButton) saveCalibratedButton.addEventListener("click", async () => {{
         setIntrinsics(calibratedIntrinsics);
         await saveDefaultIntrinsics(saveCalibratedButton);
-      }});
-      if (defaultButton) defaultButton.addEventListener("click", async () => {{
-        setIntrinsics(oldDefaultIntrinsics);
-        await saveDefaultIntrinsics(defaultButton);
       }});
       if (saveDefaultButton) saveDefaultButton.addEventListener("click", () => saveDefaultIntrinsics(saveDefaultButton));
       if (saveRightButton) saveRightButton.addEventListener("click", saveRightIntrinsics);
@@ -2739,24 +2746,24 @@ def build_arg_parser_server() -> argparse.ArgumentParser:
     parser.add_argument("--yolo-conf", type=float, default=0.15)
     parser.add_argument("--yolo-imgsz", type=int, default=640)
     parser.add_argument("--yolo-mask-threshold", type=float, default=0.5)
-    parser.add_argument("--focal-px", type=float, default=260.0)
-    parser.add_argument("--fx", type=float, help="default left camera fx in pixels; defaults to --focal-px")
-    parser.add_argument("--fy", type=float, help="default left camera fy in pixels; defaults to --focal-px")
-    parser.add_argument("--cx", type=float, default=320.0)
-    parser.add_argument("--cy", type=float, default=240.0)
+    parser.add_argument("--focal-px", type=float, default=CALIBRATED_LEFT_FOCAL_PX)
+    parser.add_argument("--fx", type=float, default=CALIBRATED_LEFT_FX, help="default left camera fx in pixels")
+    parser.add_argument("--fy", type=float, default=CALIBRATED_LEFT_FY, help="default left camera fy in pixels")
+    parser.add_argument("--cx", type=float, default=CALIBRATED_LEFT_CX)
+    parser.add_argument("--cy", type=float, default=CALIBRATED_LEFT_CY)
     parser.add_argument(
         "--dist-coeffs",
-        default=None,
-        help="default left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3; defaults to all zeros",
+        default=",".join(str(value) for value in CALIBRATED_LEFT_DIST_COEFFS),
+        help="default left camera distortion as comma-separated OpenCV coeffs k1,k2,p1,p2,k3",
     )
-    parser.add_argument("--fx-right", type=float, help="default right camera fx; defaults to the left fx")
-    parser.add_argument("--fy-right", type=float, help="default right camera fy; defaults to the left fy")
-    parser.add_argument("--cx-right", type=float, help="default right camera cx; defaults to the left cx")
-    parser.add_argument("--cy-right", type=float, help="default right camera cy; defaults to the left cy")
+    parser.add_argument("--fx-right", type=float, default=CALIBRATED_RIGHT_FX, help="default right camera fx")
+    parser.add_argument("--fy-right", type=float, default=CALIBRATED_RIGHT_FY, help="default right camera fy")
+    parser.add_argument("--cx-right", type=float, default=CALIBRATED_RIGHT_CX, help="default right camera cx")
+    parser.add_argument("--cy-right", type=float, default=CALIBRATED_RIGHT_CY, help="default right camera cy")
     parser.add_argument(
         "--dist-coeffs-right",
-        default=None,
-        help="default right camera distortion as comma-separated coeffs k1,k2,p1,p2,k3; defaults to the left distortion",
+        default=",".join(str(value) for value in CALIBRATED_RIGHT_DIST_COEFFS),
+        help="default right camera distortion as comma-separated coeffs k1,k2,p1,p2,k3",
     )
     parser.add_argument("--stereo-r", default=None, help="stereo rotation R, 9 comma-separated values (row-major 3x3)")
     parser.add_argument("--stereo-t", default=None, help="stereo translation T, 3 comma-separated values in mm")
