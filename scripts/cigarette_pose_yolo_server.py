@@ -989,6 +989,7 @@ def _uploaded_yolo_model_path(handler: BaseHTTPRequestHandler) -> str:
         environ={
             "REQUEST_METHOD": "POST",
             "CONTENT_TYPE": handler.headers.get("Content-Type", ""),
+            "CONTENT_LENGTH": handler.headers.get("Content-Length", ""),
         },
     )
     field = form["model_file"] if "model_file" in form else None

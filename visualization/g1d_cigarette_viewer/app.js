@@ -449,8 +449,20 @@ function renderPose(pose, { frame = false } = {}) {
   const drawRightNewDist = wantRightNewDist && bc && Array.isArray(bc.c_right_new_dist_m);
   const drawStereo = wantStereo && bc && Array.isArray(bc.c_stereo_m);
   const drawStereoPlane = wantStereoPlane && bc && Array.isArray(bc.c_stereo_plane_m);
+  const selectedAnyMethod = Boolean(
+    wantOldOld || wantOldNew || wantNewNew || wantNewOld || wantNewDist ||
+    wantRightNew || wantRightNewDist || wantStereo || wantStereoPlane,
+  );
 
   if (!drawOldOld && !drawOldNew && !drawNewNew && !drawNewOld && !drawNewDist && !drawRightNew && !drawRightNewDist && !drawStereo && !drawStereoPlane) {
+    if (bc) {
+      if (dom.metricDelta) dom.metricDelta.textContent = "-";
+      setStatus(selectedAnyMethod ? "勾选的算法缺少对应数据" : "未勾选任何算法");
+      window.__g1dVisualizerState.cigaretteObjects = 0;
+      window.__g1dVisualizerState.lastCenterRobotM = null;
+      writeSceneState();
+      return;
+    }
     const fallbackCenter = drawFallbackPoseBox(pose, centerOnly);
     if (fallbackCenter) {
       if (dom.metricDelta) dom.metricDelta.textContent = "-";
