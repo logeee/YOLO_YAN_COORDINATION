@@ -28,6 +28,12 @@ DEFAULT_DDS_LOWSTATE_TOPIC = "rt/lowstate"
 DEFAULT_DDS_HISPEED_TOPIC = "rt/hispeed_state"
 DEFAULT_UNITREE_SDK2PY_PATH = "/home/unitree/unitree_sdk2_python"
 VIEWER_DIR = Path(__file__).resolve().parents[1] / "visualization" / "g1d_cigarette_viewer"
+DEFAULT_COLUMN_RAW_MIN_MM = -185.1
+DEFAULT_COLUMN_RAW_MAX_MM = 246.9
+DEFAULT_COLUMN_VISUAL_MAX_MM = 420.0
+COLUMN_RAW_MIN_MM = DEFAULT_COLUMN_RAW_MIN_MM
+COLUMN_RAW_MAX_MM = DEFAULT_COLUMN_RAW_MAX_MM
+COLUMN_VISUAL_MAX_MM = DEFAULT_COLUMN_VISUAL_MAX_MM
 DEFAULT_ROBOT_STATE: dict[str, Any] = {
     "ok": True,
     "source": "visualizer_default",
@@ -46,37 +52,51 @@ DDS_READER: "_DdsStateReader | None" = None
 # untouched so you can compare. The viewer prefers our_method when present.
 OUR: dict[str, Any] = {"enabled": False}
 
-# Intrinsics presets for the YOLO service's own mono-PnP (?fx&fy&cx&cy). The 3D
-# point depth/position depends on these, so /api/xyz fetches the service twice
-# (old vs new intrinsics) to compare intrinsic AND extrinsic effects together.
-OLD_INTRINSICS: dict[str, float] = {"fx": 275.06, "fy": 275.39, "cx": 305.71, "cy": 268.34}        # historical alias; old preset retired
+# Intrinsics presets for the YOLO service's own mono-PnP (?fx&fy&cx&cy). The
+# historical 260px preset has been retired; keep OLD_INTRINSICS as an alias for
+# UI/backward compatibility so no current request sends the old calibration.
+OLD_INTRINSICS: dict[str, float] = {"fx": 275.06, "fy": 275.39, "cx": 305.71, "cy": 268.34}
 # NEW intrinsics are loaded from a calibration file at startup (see main() ->
-# _load_left_intrinsics_file). These hard-coded numbers are only a fallback used
-# when the file is missing; they mirror the previous 20260615172934 calibration.
+# _load_left_intrinsics_file). These hard-coded numbers are the current fallback
+# when the file is missing.
 NEW_INTRINSICS: dict[str, float] = {"fx": 275.06, "fy": 275.39, "cx": 305.71, "cy": 268.34}
 # RIGHT-camera NEW intrinsics, sent as fx_right/fy_right/cx_right/cy_right so the
 # service also returns a right-eye 3D point under our calibration.
-NEW_INTRINSICS_RIGHT: dict[str, float] = {"fx": 274.29699860633724, "fy": 274.5716080713627, "cx": 289.7163405945703, "cy": 274.4892508669222}
+NEW_INTRINSICS_RIGHT: dict[str, float] = {
+    "fx": 274.29699860633724,
+    "fy": 274.5716080713627,
+    "cx": 289.7163405945703,
+    "cy": 274.4892508669222,
+}
 
 # NEW distortion coefficients (k1,k2,p1,p2,k3), loaded from the same calibration
 # file as NEW_INTRINSICS. ONLY the distortion-corrected combos send these to the
 # YOLO service; every other combo sends ZERO_DIST so the service's mono-PnP does
 # NOT undistort, keeping the intrinsics/extrinsics-only comparison clean.
 NEW_DIST: list[float] = [0.05998239, -0.07112947, -0.00037432, 0.00015172, 0.01724672]
-NEW_DIST_RIGHT: list[float] = [0.06292257512401175, -0.07717484464783685, -0.000405354779537882, -0.00006950375556195126, 0.019962308624586825]
+NEW_DIST_RIGHT: list[float] = [
+    0.06292257512401175,
+    -0.07717484464783685,
+    -0.000405354779537882,
+    -0.00006950375556195126,
+    0.019962308624586825,
+]
 ZERO_DIST: list[float] = [0.0, 0.0, 0.0, 0.0, 0.0]
 
 # Default calibration files on this machine. NEW intrinsics (grid) come from the
 # JSON; our_method intrinsics come from the matching OpenCV stereo YAML; NEW
 # extrinsics (hand-eye) come from the handeye run that referenced that YAML.
 # Left/right eyes each have their own hand-eye optical->base transform.
-DEFAULT_NEW_INTRINSICS_FILE = "/home/robot/yx/calib/robot-twoeyes/data/calib_images/20260624134100/calibration_result.json"
-DEFAULT_NEW_INTRINSICS_YAML = "/home/robot/yx/calib/robot-twoeyes/data/calib_images/20260624134100/stereo_calibration.yaml"
+DEFAULT_RUNTIME_CONFIG_FILE = Path(__file__).resolve().parents[1] / "config" / "cigarette_pose_runtime.json"
+DEFAULT_NEW_INTRINSICS_FILE = str(DEFAULT_RUNTIME_CONFIG_FILE)
+DEFAULT_NEW_INTRINSICS_YAML = str(DEFAULT_RUNTIME_CONFIG_FILE)
 DEFAULT_HANDEYE_LEFT_FILE = "/home/robot/yx/calib/hand_eye/handeye_data/20260625_144450/handeye_result_left.json"
 DEFAULT_HANDEYE_RIGHT_FILE = "/home/robot/yx/calib/hand_eye/handeye_data/20260625_144450/handeye_result_right.json"
 # URDF carrying the d435 camera joint (nominal/pre-calibration extrinsics). The
 # viewer's own g1_d.urdf has no camera link, so we look in the parent project.
 DEFAULT_URDF_FILE = "/home/robot/vision_arm_control/g1_d.urdf"
+DEFAULT_CAMERA_TO_VERTICAL_DEG = 47.6
+DEFAULT_CAMERA_OFFSET_M = (0.0576235, 0.01753, 0.42987)
 
 
 def _load_intrinsics_file(path: str | Path, *, json_key: str = "left_camera",
@@ -103,6 +123,11 @@ def _load_intrinsics_file(path: str | Path, *, json_key: str = "left_camera",
         return {"fx": float(K[0, 0]), "fy": float(K[1, 1]),
                 "cx": float(K[0, 2]), "cy": float(K[1, 2])}
     data = json.loads(path.read_text(encoding="utf-8"))
+    runtime_key = "intrinsics_right" if json_key == "right_camera" else "intrinsics"
+    if isinstance(data.get(runtime_key), dict):
+        K = data[runtime_key]
+        return {"fx": float(K["fx"]), "fy": float(K["fy"]),
+                "cx": float(K["cx"]), "cy": float(K["cy"])}
     K = data[json_key]["camera_matrix"]
     return {"fx": float(K[0][0]), "fy": float(K[1][1]),
             "cx": float(K[0][2]), "cy": float(K[1][2])}
@@ -145,6 +170,12 @@ def _load_dist_coeffs_file(path: str | Path, *, json_key: str = "left_camera",
         flat = [float(v) for row in D.tolist() for v in (row if isinstance(row, list) else [row])]
     else:
         data = json.loads(path.read_text(encoding="utf-8"))
+        runtime_key = "intrinsics_right" if json_key == "right_camera" else "intrinsics"
+        if isinstance(data.get(runtime_key), dict) and "dist_coeffs" in data[runtime_key]:
+            D = data[runtime_key]["dist_coeffs"]
+            flat = [float(v) for v in (D[0] if (isinstance(D, list) and D and isinstance(D[0], list)) else D)]
+            out = (flat + [0.0, 0.0, 0.0, 0.0, 0.0])[:5]
+            return out
         D = data[json_key]["dist_coeffs"]
         flat = [float(v) for v in (D[0] if (isinstance(D, list) and D and isinstance(D[0], list)) else D)]
     out = (flat + [0.0, 0.0, 0.0, 0.0, 0.0])[:5]
@@ -159,6 +190,47 @@ def _load_right_dist_coeffs_file(path: str | Path) -> list[float]:
     return _load_dist_coeffs_file(
         path, json_key="right_camera",
         yaml_keys=("right_distortion_coefficients", "right_dist_coeffs", "right_distortion"))
+
+
+def _load_stereo_left_to_right_file(path: str | Path):
+    """Load OpenCV stereo R/T that maps left optical points to right optical."""
+    import numpy as np
+
+    path = Path(path)
+    if path.suffix.lower() in (".yaml", ".yml"):
+        import cv2
+
+        fs = cv2.FileStorage(str(path), cv2.FILE_STORAGE_READ)
+        try:
+            R = None
+            T = None
+            for key in ("R", "rotation_matrix", "stereo_rotation"):
+                node = fs.getNode(key)
+                if node is not None and not node.empty():
+                    R = node.mat()
+                    break
+            for key in ("T", "translation_vector", "stereo_translation"):
+                node = fs.getNode(key)
+                if node is not None and not node.empty():
+                    T = node.mat()
+                    break
+        finally:
+            fs.release()
+        if R is None or T is None:
+            raise ValueError(f"stereo R/T not found in {path}")
+    else:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        stereo = data.get("stereo") if isinstance(data.get("stereo"), dict) else data
+        R = stereo.get("R")
+        T = stereo.get("T")
+        if R is None or T is None:
+            raise ValueError(f"stereo R/T not found in {path}")
+
+    R_arr = np.asarray(R, dtype=float).reshape(3, 3)
+    T_arr = np.asarray(T, dtype=float).reshape(3)
+    if float(np.linalg.norm(T_arr)) > 2.0:
+        T_arr = T_arr / 1000.0
+    return R_arr, T_arr
 
 
 def _urdf_nominal_optical_to_base(urdf_path: Path, camera_child: str = "d435_link",
@@ -209,6 +281,22 @@ def _urdf_nominal_optical_to_base(urdf_path: Path, camera_child: str = "d435_lin
     return T_base_cam @ M
 
 
+def _default_visual_camera_optical_to_base():
+    """Fallback optical->torso transform used by the local standalone viewer."""
+    import numpy as np
+
+    theta = np.deg2rad(DEFAULT_CAMERA_TO_VERTICAL_DEG)
+    x_right = np.array([0.0, -1.0, 0.0], dtype=float)
+    y_down = np.array([-np.cos(theta), 0.0, -np.sin(theta)], dtype=float)
+    z_forward = np.array([np.sin(theta), 0.0, -np.cos(theta)], dtype=float)
+    T = np.eye(4, dtype=float)
+    T[:3, 0] = x_right
+    T[:3, 1] = y_down
+    T[:3, 2] = z_forward
+    T[:3, 3] = np.array(DEFAULT_CAMERA_OFFSET_M, dtype=float)
+    return T
+
+
 def _load_T_cam2base_json(handeye_path: str | Path):
     """Read the 4x4 optical->base hand-eye transform from handeye_result.json.
 
@@ -231,13 +319,28 @@ def _load_T_cam2base_json(handeye_path: str | Path):
     return M
 
 
+def _derive_right_T_from_left_stereo(T_base_left, stereo_path: str | Path):
+    """Derive right optical->base from left optical->base and stereo R/T."""
+    import numpy as np
+
+    R_left_to_right, t_left_to_right = _load_stereo_left_to_right_file(stereo_path)
+    T_left_from_right = np.eye(4)
+    T_left_from_right[:3, :3] = R_left_to_right.T
+    T_left_from_right[:3, 3] = -R_left_to_right.T @ t_left_to_right
+    return T_base_left @ T_left_from_right
+
+
 def _resolve_urdf_path() -> Path | None:
     """Find a g1_d.urdf that actually contains the d435 camera joint."""
-    scripts_dir = Path(__file__).resolve().parents[3]
+    script_path = Path(__file__).resolve()
+    repo_root = script_path.parents[1]
     candidates = [
         Path(DEFAULT_URDF_FILE),
-        scripts_dir / "g1_d.urdf",
-        scripts_dir.parent / "g1_d.urdf",
+        Path("/unitree/module/unitree_eai/xr_teleoperate/assets/g1_D/g1_d.urdf"),
+        Path("/unitree/ota/backup/module/unitree_eai/0.9.7.3/module/unitree_eai/file/unitree/module/unitree_eai/xr_teleoperate/assets/g1_D/g1_d.urdf"),
+        VIEWER_DIR / "g1_d.urdf",
+        repo_root / "g1_d.urdf",
+        repo_root.parent / "g1_d.urdf",
     ]
     for cand in candidates:
         try:
@@ -286,8 +389,36 @@ def _load_our_method(intrinsics_path: str, handeye_path: str, handeye_right_path
         print(f"[extrinsics] urdf nominal from {urdf_path}: "
               f"cam_offset(torso)={[round(float(v), 4) for v in OUR['T_urdf'][:3, 3]]}", flush=True)
     except (Exception, SystemExit) as exc:
-        OUR["T_urdf"] = None
-        print(f"[extrinsics] urdf nominal transform unavailable ({exc})", flush=True)
+        OUR["T_urdf"] = _default_visual_camera_optical_to_base()
+        print(
+            "[extrinsics] urdf nominal transform unavailable "
+            f"({exc}); using local viewer fallback cam_offset="
+            f"{[round(float(v), 4) for v in OUR['T_urdf'][:3, 3]]}",
+            flush=True,
+        )
+
+    if OUR.get("T") is None and OUR.get("T_urdf") is not None:
+        OUR["T"] = OUR["T_urdf"]
+        OUR["handeye"] = "local_viewer_fallback_same_as_urdf"
+
+    if OUR.get("T_right") is None and OUR.get("T") is not None:
+        stereo_candidates: list[str | Path] = []
+        for cand in (intrinsics_path, DEFAULT_RUNTIME_CONFIG_FILE, DEFAULT_NEW_INTRINSICS_FILE, DEFAULT_NEW_INTRINSICS_YAML):
+            if cand and cand not in stereo_candidates:
+                stereo_candidates.append(cand)
+        last_exc: Exception | SystemExit | None = None
+        for stereo_path in stereo_candidates:
+            try:
+                OUR["T_right"] = _derive_right_T_from_left_stereo(OUR["T"], stereo_path)
+                OUR["handeye_right"] = f"derived_from_left_stereo:{stereo_path}"
+                print(f"[extrinsics] RIGHT derived from LEFT + stereo {stereo_path}: "
+                      f"cam_offset(torso)={[round(float(v), 4) for v in OUR['T_right'][:3, 3]]}",
+                      flush=True)
+                break
+            except (Exception, SystemExit) as exc:
+                last_exc = exc
+        else:
+            print(f"[extrinsics] RIGHT derived transform unavailable ({last_exc})", flush=True)
 
     # Optional our_method PnP box (4th estimate); needs yolo_handeye_pick.
     try:
@@ -909,11 +1040,47 @@ def _fetch_xyz_or_pose(source_url: str, pose_url: str, label: str,
         return _post_json(pose_url, body, timeout_sec)
 
 
+def _fetch_raw_xyz(source_url: str, label: str, timeout_sec: float) -> dict[str, Any]:
+    query = {"label": label} if label else {}
+    return _fetch_json(_merge_query(source_url, query), timeout_sec)
+
+
+def _overlay_raw_stereo_payload(payload: dict[str, Any], raw_payload: dict[str, Any] | None) -> None:
+    """Keep raw stereo outputs while mono-PnP comparison requests vary intrinsics."""
+    if not isinstance(payload, dict) or not isinstance(raw_payload, dict):
+        return
+    overlay: dict[str, str] = {}
+    for key in ("stereo", "stereo_plane"):
+        value = raw_payload.get(key)
+        if isinstance(value, dict) and value.get("available") and value.get("center_xyz_mm"):
+            payload[key] = json.loads(json.dumps(value))
+            overlay[key] = "raw_xyz"
+    right = raw_payload.get("right")
+    current_right = payload.get("right")
+    if (not isinstance(current_right, dict) or not current_right.get("center_xyz_mm")) and isinstance(right, dict):
+        payload["right"] = json.loads(json.dumps(right))
+        overlay["right"] = "raw_xyz_fallback"
+    if overlay:
+        payload["visualizer_raw_overlay"] = overlay
+
+
 def _read_member(obj: Any, name: str, default: Any = None) -> Any:
     value = getattr(obj, name, default)
     if callable(value):
         return value()
     return value
+
+
+def _map_column_raw_to_visual_m(raw_height_m: float) -> tuple[float, float]:
+    raw_mm = float(raw_height_m) * 1000.0
+    span = float(COLUMN_RAW_MAX_MM) - float(COLUMN_RAW_MIN_MM)
+    visual_max_mm = max(0.0, float(COLUMN_VISUAL_MAX_MM))
+    if abs(span) < 1e-9:
+        visual_mm = max(0.0, min(visual_max_mm, raw_mm))
+    else:
+        ratio = (raw_mm - float(COLUMN_RAW_MIN_MM)) / span
+        visual_mm = max(0.0, min(1.0, ratio)) * visual_max_mm
+    return visual_mm / 1000.0, raw_mm
 
 
 def _round_float(value: Any, ndigits: int = 6) -> float | None:
@@ -1000,9 +1167,11 @@ class _DdsStateReader:
             joint_states_velocity.append(dq if dq is not None else 0.0)
             joint_states_effort.append(tau_est if tau_est is not None else 0.0)
 
-        column_height_m = _round_float(_read_member(hispeed, "y")) if hispeed is not None else None
-        if column_height_m is not None:
-            column_height_m = max(0.0, min(0.42, column_height_m))
+        column_raw_m = _round_float(_read_member(hispeed, "y")) if hispeed is not None else None
+        column_height_m = None
+        column_raw_mm = None
+        if column_raw_m is not None:
+            column_height_m, column_raw_mm = _map_column_raw_to_visual_m(column_raw_m)
             per_joint = column_height_m / 2.0
             joints["LZ_mt_Joint"] = per_joint
             joints["LZ_it_Joint"] = per_joint
@@ -1032,6 +1201,9 @@ class _DdsStateReader:
                 "motor_count": len(motor_state),
             },
             "column_extension_mm": round(column_height_m * 1000.0, 1) if column_height_m is not None else None,
+            "column_raw_extension_mm": round(column_raw_mm, 1) if column_raw_mm is not None else None,
+            "column_raw_range_mm": [float(COLUMN_RAW_MIN_MM), float(COLUMN_RAW_MAX_MM)],
+            "column_visual_max_mm": float(COLUMN_VISUAL_MAX_MM),
             "joints": joints,
             "joint_states": {
                 "name": joint_states_name,
@@ -1329,6 +1501,10 @@ def make_handler(
                                               left_intr, left_dist, ir, right_dist, timeout_sec)
 
                 try:
+                    try:
+                        payload_raw = _fetch_raw_xyz(source_url, label, timeout_sec)
+                    except Exception:
+                        payload_raw = None
                     payload = _combo(NEW_INTRINSICS, ZERO_DIST, ZERO_DIST)
                     try:
                         payload_old = _combo(OLD_INTRINSICS, ZERO_DIST, ZERO_DIST)
@@ -1338,6 +1514,7 @@ def make_handler(
                         payload_new_dist = _combo(NEW_INTRINSICS, NEW_DIST, NEW_DIST_RIGHT)
                     except Exception:
                         payload_new_dist = None
+                    _overlay_raw_stereo_payload(payload, payload_raw)
                     _inject_base_coords(payload, payload_old, payload_new_dist)
                     if use_our:
                         _inject_our_method(payload)
@@ -1393,6 +1570,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dds-hispeed-topic", default=DEFAULT_DDS_HISPEED_TOPIC)
     parser.add_argument("--unitree-sdk2py-path", default=DEFAULT_UNITREE_SDK2PY_PATH)
     parser.add_argument("--joint-states-topic", default=DEFAULT_JOINT_STATES_TOPIC)
+    parser.add_argument("--column-raw-min-mm", type=float, default=DEFAULT_COLUMN_RAW_MIN_MM)
+    parser.add_argument("--column-raw-max-mm", type=float, default=DEFAULT_COLUMN_RAW_MAX_MM)
+    parser.add_argument("--column-visual-max-mm", type=float, default=DEFAULT_COLUMN_VISUAL_MAX_MM)
     parser.add_argument("--timeout-sec", type=float, default=8.0)
     parser.add_argument("--our-method", dest="our_method", action="store_true", default=True,
                         help="recompute box pose with OUR intrinsics + hand-eye (default on)")
@@ -1416,9 +1596,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     global NEW_INTRINSICS, NEW_DIST, NEW_INTRINSICS_RIGHT, NEW_DIST_RIGHT
+    global COLUMN_RAW_MIN_MM, COLUMN_RAW_MAX_MM, COLUMN_VISUAL_MAX_MM
     args = build_arg_parser().parse_args()
     if not VIEWER_DIR.exists():
         raise FileNotFoundError(f"viewer directory not found: {VIEWER_DIR}")
+
+    COLUMN_RAW_MIN_MM = float(args.column_raw_min_mm)
+    COLUMN_RAW_MAX_MM = float(args.column_raw_max_mm)
+    COLUMN_VISUAL_MAX_MM = float(args.column_visual_max_mm)
+    DEFAULT_ROBOT_STATE["column_extension_mm"] = COLUMN_VISUAL_MAX_MM
+    DEFAULT_ROBOT_STATE["column_raw_range_mm"] = [COLUMN_RAW_MIN_MM, COLUMN_RAW_MAX_MM]
+    DEFAULT_ROBOT_STATE["column_visual_max_mm"] = COLUMN_VISUAL_MAX_MM
+    DEFAULT_ROBOT_STATE["joints"] = {
+        "LZ_mt_Joint": COLUMN_VISUAL_MAX_MM / 2000.0,
+        "LZ_it_Joint": COLUMN_VISUAL_MAX_MM / 2000.0,
+    }
 
     # NEW intrinsics for the grid (?fx&fy&cx&cy) are read from a calibration file;
     # fall back to the hard-coded NEW_INTRINSICS if the file can't be read. The
