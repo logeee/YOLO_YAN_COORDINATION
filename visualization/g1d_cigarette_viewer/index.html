@@ -50,6 +50,10 @@
 
         <div class="method-toggle">
           <span class="method-toggle-title">方法对比</span>
+          <div class="method-note">
+            <strong id="methodCallMode">当前对比模式：单次请求 18081 /pose，1-9 共用同一次 YOLO。</strong>
+            <span id="methodCallModeDetail">①-⑦ 本地重算 PnP；⑧/⑨ 复用同一次请求里的双目结果，不会重复拍照或重复 YOLO。</span>
+          </div>
           <div class="button-row two-col">
             <button id="selectAllMethods" type="button">全选</button>
             <button id="clearAllMethods" type="button">全不选</button>
@@ -267,6 +271,6 @@
         </div>
       </section>
     </main>
-    <script type="module" src="./app.js?v=20260622_5method_centeronly_v10"></script>
+    <script type="module" src="./app.js?v=20260701_single_yolo_compare_v1"></script>
   </body>
 </html>

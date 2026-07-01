@@ -522,6 +522,7 @@ def _inject_base_coords(
     pose: dict[str, Any],
     payload_old: dict[str, Any] | None = None,
     payload_new_dist: dict[str, Any] | None = None,
+    payload_new: dict[str, Any] | None = None,
 ) -> None:
     """Base-frame coordinates for the intrinsics x extrinsics comparison.
 
@@ -557,10 +558,11 @@ def _inject_base_coords(
     try:
         import numpy as np
 
-        p_new = _optical_center_m(pose)
+        primary_payload = payload_new if payload_new is not None else pose
+        p_new = _optical_center_m(primary_payload)
         p_old = _optical_center_m(payload_old) if payload_old is not None else None
         p_new_dist = _optical_center_m(payload_new_dist) if payload_new_dist is not None else None
-        p_right = _optical_center_right_m(pose)
+        p_right = _optical_center_right_m(primary_payload)
         p_right_dist = _optical_center_right_m(payload_new_dist) if payload_new_dist is not None else None
         p_stereo = _stereo_center_m(pose)
         p_stereo_plane = _stereo_plane_center_m(pose)
@@ -643,6 +645,38 @@ def _inject_base_coords(
         pose["base_coords"] = out
     except (Exception, SystemExit) as exc:
         pose["base_coords"] = {"ok": False, "error": str(exc)}
+
+
+def _algorithm_comparison_meta() -> dict[str, Any]:
+    return {
+        "mode": "single_18081_pose_request",
+        "single_yolo_reuse": True,
+        "same_frame_guaranteed": True,
+        "request_count_nominal": 1,
+        "description": (
+            "当前 18085 只请求一次 18081 /pose。①-⑦ 都复用这一次 YOLO 的四点结果，"
+            "在 18085 本地重算不同内参、外参和畸变组合；⑧/⑨ 复用同一次请求里已经算出的双目结果。"
+            "因此 1-9 不会为了对比再次拍照或再次 YOLO。"
+        ),
+        "methods": [
+            {"id": "①", "name": "老内参 + 老外参", "source": "single_yolo_left_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "②", "name": "老内参 + 新外参", "source": "single_yolo_left_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "③", "name": "新内参 + 新外参", "source": "single_yolo_left_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "④", "name": "新内参 + 老外参", "source": "single_yolo_left_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "⑤", "name": "新内参 + 新外参 + 畸变校正", "source": "single_yolo_left_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "⑥", "name": "右眼新内参 + 新外参", "source": "single_yolo_right_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "⑦", "name": "右眼新内参 + 新外参 + 畸变校正", "source": "single_yolo_right_points_recomputed_pnp", "extra_yolo_required": False},
+            {"id": "⑧", "name": "双目深度", "source": "same_request_stereo_triangulation", "extra_yolo_required": False},
+            {
+                "id": "⑨",
+                "name": "双目深度 + mask内特征匹配",
+                "source": "same_request_feature_epipolar_ransac",
+                "extra_yolo_required": False,
+                "note": "需要本次请求里的左右图、mask内纹理特征和双目标定；不需要第二次 YOLO。",
+            },
+        ],
+        "unavailable_reason": "如果某个方法没有结果，一般是本次 payload 缺右眼四点、双目标定或特征匹配失败，不是因为需要多次 YOLO。",
+    }
 
 
 def _inject_our_method(pose: dict[str, Any]) -> None:
@@ -1043,6 +1077,162 @@ def _fetch_xyz_or_pose(source_url: str, pose_url: str, label: str,
 def _fetch_raw_xyz(source_url: str, label: str, timeout_sec: float) -> dict[str, Any]:
     query = {"label": label} if label else {}
     return _fetch_json(_merge_query(source_url, query), timeout_sec)
+
+
+def _fetch_single_pose(source_url: str, label: str, timeout_sec: float) -> dict[str, Any]:
+    """Call 18081 once so all 18085 comparison methods share one YOLO result."""
+    pose_url = _pose_url_from(source_url)
+    body: dict[str, Any] = {
+        **NEW_INTRINSICS,
+        "dist_coeffs": list(NEW_DIST),
+        **{f"{key}_right": value for key, value in NEW_INTRINSICS_RIGHT.items()},
+        "dist_coeffs_right": list(NEW_DIST_RIGHT),
+    }
+    if label:
+        body["label"] = label
+    return _post_json(pose_url, body, timeout_sec)
+
+
+def _extract_points_px(payload: dict[str, Any], side: str = "left") -> Any:
+    if not isinstance(payload, dict):
+        return None
+    if side == "right":
+        right = payload.get("right")
+        return right.get("points_px") if isinstance(right, dict) else None
+    viz = payload.get("g1d_visualization")
+    viz_yolo = viz.get("yolo") if isinstance(viz, dict) else None
+    left = payload.get("left")
+    for candidate in (
+        payload.get("points_px"),
+        viz_yolo.get("points_px") if isinstance(viz_yolo, dict) else None,
+        left.get("points_px") if isinstance(left, dict) else None,
+    ):
+        if candidate:
+            return candidate
+    return None
+
+
+def _comparison_top_sides_m(payload: dict[str, Any]) -> tuple[float, float]:
+    size = None
+    if isinstance(payload, dict):
+        size = payload.get("object_top_size_mm")
+        if not size:
+            viz_box = ((payload.get("g1d_visualization") or {}).get("box") or {})
+            size = viz_box.get("object_top_size_mm")
+        if not size and isinstance(payload.get("object_box_size_mm"), dict):
+            box_size = payload["object_box_size_mm"]
+            size = [box_size.get("length_mm"), box_size.get("width_mm")]
+    if isinstance(size, (list, tuple)) and len(size) >= 2:
+        values = [float(size[0]) / 1000.0, float(size[1]) / 1000.0]
+        return max(values), min(values)
+    return 0.161, 0.095
+
+
+def _pnp_config(intr: dict[str, float], dist: list[float], payload: dict[str, Any]):
+    from cigarette_pose_optical_api import PoseConfig
+
+    long_m, short_m = _comparison_top_sides_m(payload)
+    return PoseConfig(
+        long_side_m=long_m,
+        short_side_m=short_m,
+        orientation=str(payload.get("selected_orientation") or "short_x_long_y"),
+        focal_px=float(intr["fx"]),
+        fx=float(intr["fx"]),
+        fy=float(intr["fy"]),
+        cx=float(intr["cx"]),
+        cy=float(intr["cy"]),
+        dist_coeffs=tuple(float(value) for value in dist),
+    )
+
+
+def _recompute_pnp_payload(
+    payload: dict[str, Any],
+    left_intr: dict[str, float],
+    left_dist: list[float],
+    right_intr: dict[str, float] | None = None,
+    right_dist: list[float] | None = None,
+) -> dict[str, Any] | None:
+    """Recompute mono-PnP from the one YOLO result already returned by 18081."""
+    from cigarette_pose_optical_api import estimate_pose_from_left_points
+
+    orientation = str(payload.get("selected_orientation") or "short_x_long_y")
+    fraction = float(payload.get("box_head_fraction_from_head") or 0.2)
+    left_points = _extract_points_px(payload, "left")
+    if not left_points:
+        return None
+
+    left_config = _pnp_config(left_intr, left_dist, payload)
+    left_pose = estimate_pose_from_left_points(
+        left_points,
+        left_config,
+        orientation=orientation,
+        points_order="ordered",
+        box_head_fraction_from_head=fraction,
+        camera_to_vertical_deg=DEFAULT_CAMERA_TO_VERTICAL_DEG,
+    )
+    out: dict[str, Any] = {
+        "ok": True,
+        "center_xyz_mm": left_pose.get("center_xyz_mm"),
+        "x_mm": left_pose.get("x_mm"),
+        "y_mm": left_pose.get("y_mm"),
+        "z_mm": left_pose.get("z_mm"),
+        "points_px": left_pose.get("points_px"),
+        "selected_orientation": orientation,
+        "object_top_size_mm": left_pose.get("object_top_size_mm"),
+        "reprojection_error_px": left_pose.get("reprojection_error_px"),
+        "intrinsics_assumption": left_pose.get("intrinsics_assumption"),
+        "source": "single_yolo_recomputed_pnp",
+    }
+
+    right_points = _extract_points_px(payload, "right")
+    if right_points and right_intr is not None:
+        right_config = _pnp_config(right_intr, right_dist or ZERO_DIST, payload)
+        right_pose = estimate_pose_from_left_points(
+            right_points,
+            right_config,
+            orientation=orientation,
+            points_order="ordered",
+            box_head_fraction_from_head=fraction,
+            camera_to_vertical_deg=DEFAULT_CAMERA_TO_VERTICAL_DEG,
+        )
+        out["right"] = {
+            "available": True,
+            "method": "mono_pnp_recomputed_from_single_yolo_right_points",
+            "frame": "right_camera_optical",
+            "center_xyz_mm": right_pose.get("center_xyz_mm"),
+            "x_mm": right_pose.get("x_mm"),
+            "y_mm": right_pose.get("y_mm"),
+            "z_mm": right_pose.get("z_mm"),
+            "points_px": right_pose.get("points_px"),
+            "reprojection_error_px": right_pose.get("reprojection_error_px"),
+            "intrinsics_assumption": right_pose.get("intrinsics_assumption"),
+        }
+    return out
+
+
+def _inject_single_yolo_comparison(payload: dict[str, Any]) -> None:
+    payload_new = _recompute_pnp_payload(
+        payload,
+        NEW_INTRINSICS,
+        ZERO_DIST,
+        NEW_INTRINSICS_RIGHT,
+        ZERO_DIST,
+    )
+    payload_old = _recompute_pnp_payload(payload, OLD_INTRINSICS, ZERO_DIST)
+    payload_new_dist = _recompute_pnp_payload(
+        payload,
+        NEW_INTRINSICS,
+        NEW_DIST,
+        NEW_INTRINSICS_RIGHT,
+        NEW_DIST_RIGHT,
+    )
+    if payload_new is not None:
+        payload.setdefault("visualizer_recomputed", {})["new_intrinsics_zero_dist"] = payload_new
+    if payload_old is not None:
+        payload.setdefault("visualizer_recomputed", {})["old_intrinsics_zero_dist"] = payload_old
+    if payload_new_dist is not None:
+        payload.setdefault("visualizer_recomputed", {})["new_intrinsics_with_distortion"] = payload_new_dist
+    _inject_base_coords(payload, payload_old, payload_new_dist, payload_new=payload_new)
 
 
 def _overlay_raw_stereo_payload(payload: dict[str, Any], raw_payload: dict[str, Any] | None) -> None:
@@ -1484,41 +1674,23 @@ def make_handler(
                 label = query.get("label", [""])[-1]
                 # Our own PnP (4th box) is injected ONLY when the frontend opts in.
                 use_our = query.get("our", ["0"])[-1].strip().lower() in ("1", "true", "yes", "on")
-                # Fetch GET /xyz three times (lightweight compact output, which now
-                # also carries the top-level "right" block). The service's mono-PnP
-                # 3D point depends on the intrinsics AND distortion coeffs, so each
-                # fetch varies them:
-                #   payload          left NEW dist=0,  right NEW dist=0  -> ③ left, ⑥ right
-                #   payload_old      left OLD dist=0,  right NEW dist=0  -> ① / ②
-                #   payload_new_dist left NEW left-dist, right NEW right-dist -> ⑤ left, ⑦ right
-                # Non-corrected combos send dist=0 so the service does NOT undistort.
-                # Each fetch falls back to POST /pose if /xyz is unavailable.
-                pose_url = _pose_url_from(source_url)
-                ir = NEW_INTRINSICS_RIGHT
-
-                def _combo(left_intr, left_dist, right_dist):
-                    return _fetch_xyz_or_pose(source_url, pose_url, label,
-                                              left_intr, left_dist, ir, right_dist, timeout_sec)
-
+                # Single-call comparison: one 18081 /pose request captures once and
+                # runs YOLO once. 18085 then recomputes ①-⑦ locally from that same
+                # set of 2D points; ⑧/⑨ come from the same /pose payload.
                 try:
-                    try:
-                        payload_raw = _fetch_raw_xyz(source_url, label, timeout_sec)
-                    except Exception:
-                        payload_raw = None
-                    payload = _combo(NEW_INTRINSICS, ZERO_DIST, ZERO_DIST)
-                    try:
-                        payload_old = _combo(OLD_INTRINSICS, ZERO_DIST, ZERO_DIST)
-                    except Exception:
-                        payload_old = None
-                    try:
-                        payload_new_dist = _combo(NEW_INTRINSICS, NEW_DIST, NEW_DIST_RIGHT)
-                    except Exception:
-                        payload_new_dist = None
-                    _overlay_raw_stereo_payload(payload, payload_raw)
-                    _inject_base_coords(payload, payload_old, payload_new_dist)
+                    payload = _fetch_single_pose(source_url, label, timeout_sec)
+                    _inject_single_yolo_comparison(payload)
+                    comparison_meta = _algorithm_comparison_meta()
+                    payload["algorithm_comparison_meta"] = comparison_meta
+                    if isinstance(payload.get("base_coords"), dict):
+                        payload["base_coords"]["comparison_meta"] = comparison_meta
                     if use_our:
                         _inject_our_method(payload)
-                    _json_response(self, 200 if payload.get("ok", True) else 502, {"ok": True, "url": source_url, "pose": payload})
+                    _json_response(
+                        self,
+                        200 if payload.get("ok", True) else 502,
+                        {"ok": True, "url": source_url, "pose": payload, "algorithm_comparison_meta": comparison_meta},
+                    )
                 except Exception as exc:
                     _json_response(self, 502, {"ok": False, "url": source_url, "error": str(exc)})
                 return

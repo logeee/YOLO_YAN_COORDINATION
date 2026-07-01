@@ -363,6 +363,28 @@ body.compact-mode .legend i {
   letter-spacing: 0.04em;
 }
 
+.method-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #3b5364;
+  border-radius: 6px;
+  background: #0f1d25;
+  color: #cfe8f4;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.method-note strong {
+  color: #f7fbff;
+  font-size: 13px;
+}
+
+.method-note span {
+  color: #96adbb;
+}
+
 .method-check {
   display: flex;
   align-items: center;

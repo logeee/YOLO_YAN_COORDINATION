@@ -64,6 +64,8 @@ const dom = {
   baseCoordStatus: document.querySelector("#baseCoordStatus"),
   selectAllMethods: document.querySelector("#selectAllMethods"),
   clearAllMethods: document.querySelector("#clearAllMethods"),
+  methodCallMode: document.querySelector("#methodCallMode"),
+  methodCallModeDetail: document.querySelector("#methodCallModeDetail"),
   metricNear: document.querySelector("#metricNear"),
   metricTurn: document.querySelector("#metricTurn"),
   metricYaw: document.querySelector("#metricYaw"),
@@ -621,6 +623,24 @@ function updateBaseCoordVisibility() {
   setRow(dom.baseCoordDeltaStereoPlane, ck(dom.showStereoPlane) && ck(dom.showNewNew));
 }
 
+function updateComparisonMode(pose) {
+  const meta = pose?.algorithm_comparison_meta || pose?.base_coords?.comparison_meta || null;
+  if (!dom.methodCallMode && !dom.methodCallModeDetail) return;
+
+  const requestCount = meta?.request_count_nominal ?? 1;
+  const isSingleReuse = meta ? meta.single_yolo_reuse === true : true;
+  if (dom.methodCallMode) {
+    dom.methodCallMode.textContent = isSingleReuse
+      ? "当前对比模式：单次请求 18081 /pose，1-9 共用同一次 YOLO。"
+      : `当前对比模式：多次请求 18081${requestCount ? `（约 ${requestCount} 次）` : ""}，可能多次拍照/多次 YOLO。`;
+  }
+  if (dom.methodCallModeDetail) {
+    dom.methodCallModeDetail.textContent =
+      meta?.description ||
+      "①-⑦ 本地重算 PnP；⑧/⑨ 复用同一次请求里的双目结果，不会重复拍照或重复 YOLO。";
+  }
+}
+
 function updateBaseCoordMetrics(pose) {
   const bc = pose && pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
 
@@ -664,6 +684,7 @@ function updateBaseCoordMetrics(pose) {
 }
 
 function updateMetrics(pose) {
+  updateComparisonMode(pose);
   updateBaseCoordMetrics(pose);
   const bc = pose.base_coords && pose.base_coords.ok ? pose.base_coords : null;
   // Center metrics follow ③ 新内参+新外参 (the fully-calibrated estimate).
