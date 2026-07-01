@@ -52,7 +52,7 @@ class ServerConfig:
     bind: str = "127.0.0.1"
     port: int = 18081
     out_root: Path = Path("/tmp/cigarette_pose_yolo_server")
-    yolo_model: str = "models/cigarette_yolo11m.pt"
+    yolo_model: str = "models/YanHe20class.pt"
     yolo_device: str = "cuda:0"
     yolo_conf: float = 0.15
     yolo_imgsz: int = 640
@@ -2708,7 +2708,7 @@ def build_arg_parser_server() -> argparse.ArgumentParser:
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18081)
     parser.add_argument("--out-root", type=Path, default=Path("/tmp/cigarette_pose_yolo_server"))
-    parser.add_argument("--yolo-model", default="models/cigarette_yolo11m.pt")
+    parser.add_argument("--yolo-model", default="models/YanHe20class.pt")
     parser.add_argument("--yolo-device", default="cuda:0")
     # parser.add_argument("--yolo-device", default="auto")
     parser.add_argument("--yolo-conf", type=float, default=0.15)

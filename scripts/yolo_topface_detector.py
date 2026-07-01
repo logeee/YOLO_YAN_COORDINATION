@@ -365,7 +365,7 @@ _resolve_yolo_device = resolve_yolo_device
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run only YOLO top-face detection on one image.")
     parser.add_argument("--image", type=Path, required=True, help="input image path")
-    parser.add_argument("--model", default="models/Liqun_Xiongmao.pt", help="Ultralytics segmentation model")
+    parser.add_argument("--model", default="models/YanHe20class.pt", help="Ultralytics segmentation model")
     parser.add_argument("--conf", type=float, default=0.15)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="auto")

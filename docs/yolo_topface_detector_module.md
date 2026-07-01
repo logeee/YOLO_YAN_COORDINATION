@@ -33,10 +33,10 @@ scripts/cigarette_pose_yolo_server_gpu.sh
 模型：
 
 ```bash
-models/Liqun_Xiongmao.pt
+models/YanHe20class.pt
 ```
 
-2026-05-27 默认模型已换成 `models/Liqun_Xiongmao.pt`，用于识别利群和熊猫两种烟盒。模型类别名为 `Xizi_Liqun` 和 `XiongMao`。YOLO 检测层会保留模型返回的所有类别候选，并在每个 candidate 里返回 `class_id` / `class_name`，不在检测层做类别过滤。
+2026-07-01 默认模型已换成 `models/YanHe20class.pt`，用于 20 类烟盒 segmentation。模型类别名为数字编码：`31019915`、`43010159`、`48013265`、`33013189`、`42013109`、`33013181`、`42013086`、`42013085`、`34063141`、`34063140`、`34063147`、`42013097`、`42013096`、`34063142`、`42013075`、`34063136`、`34063135`、`48090225`、`48090217`、`48090201`。YOLO 检测层会保留模型返回的所有类别候选，并在每个 candidate 里返回 `class_id` / `class_name`，不在检测层做类别过滤。
 
 坐标层会按左目选中 candidate 的类别选择物理尺寸：
 
@@ -75,7 +75,7 @@ from yolo_topface_detector import detect_yolo_points_from_image
 
 detection, info = detect_yolo_points_from_image(
     image,
-    model_path="models/Liqun_Xiongmao.pt",
+    model_path="models/YanHe20class.pt",
     conf=0.15,
     imgsz=640,
     device="cuda:0",
@@ -100,7 +100,7 @@ source /home/unitree/venvs/tv_gpu/bin/activate
 
 PYTHONPATH="$PWD:$PWD/scripts" python scripts/yolo_topface_detector.py \
   --image /tmp/left_input.jpg \
-  --model models/Liqun_Xiongmao.pt \
+  --model models/YanHe20class.pt \
   --device cuda:0 \
   --pretty
 ```
@@ -244,7 +244,7 @@ YOLO 检测层支持按类别标签过滤候选。传入标签后，只保留匹
 ```bash
 PYTHONPATH="$PWD:$PWD/scripts" python scripts/yolo_topface_detector.py \
   --image /tmp/left.jpg \
-  --model models/Liqun_Xiongmao.pt \
+  --model models/YanHe20class.pt \
   --label XiongMao \
   --select confidence \
   --pretty

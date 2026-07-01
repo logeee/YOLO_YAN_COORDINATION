@@ -1480,7 +1480,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--right-image", type=Path, help="optional offline right image")
     parser.add_argument("--left-points", help="four left top-face points for --mode points")
     parser.add_argument("--right-points", help="optional four right top-face points for --mode points")
-    parser.add_argument("--yolo-model", default="models/Liqun_Xiongmao.pt", help="Ultralytics YOLO segmentation model")
+    parser.add_argument("--yolo-model", default="models/YanHe20class.pt", help="Ultralytics YOLO segmentation model")
     parser.add_argument("--yolo-conf", type=float, default=0.15, help="YOLO confidence threshold")
     parser.add_argument("--yolo-imgsz", type=int, default=640, help="YOLO inference image size")
     parser.add_argument("--yolo-device", default="auto", help="YOLO device, e.g. auto, cpu, or cuda:0")
@@ -1504,7 +1504,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         dest="yolo_label",
         help=(
             "only use YOLO detections matching this class name/id, then select the highest-confidence "
-            "candidate by default; examples: XiongMao, Xizi_Liqun, Liqun"
+            "candidate by default; examples: 31019915, 43010159"
         ),
     )
     parser.add_argument(

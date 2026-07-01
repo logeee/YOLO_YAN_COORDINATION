@@ -14,5 +14,6 @@ fi
 
 export PYTHONPATH="$PWD:$PWD/scripts:${PYTHONPATH:-}"
 YOLO_DEVICE="${YOLO_DEVICE:-cuda:0}"
+YOLO_MODEL="${YOLO_MODEL:-models/YanHe20class.pt}"
 
-exec python scripts/cigarette_pose_yolo_server.py --bind 0.0.0.0 --port 18081 --yolo-device "$YOLO_DEVICE" "$@"
+exec python scripts/cigarette_pose_yolo_server.py --bind 0.0.0.0 --port 18081 --yolo-device "$YOLO_DEVICE" --yolo-model "$YOLO_MODEL" "$@"

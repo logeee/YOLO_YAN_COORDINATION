@@ -134,7 +134,7 @@ range_from_left_camera_mm     左相机光心到上表面中心点的直线距�
 
 ```bash
 --mode yolo
---yolo-model models/Liqun_Xiongmao.pt
+--yolo-model models/YanHe20class.pt
 --yolo-device cuda:0
 ```
 
@@ -314,7 +314,7 @@ range_override
 
 ## 当前 YOLO 模式
 
-默认模式已经切到 `yolo`，使用 `models/Liqun_Xiongmao.pt` 的 segmentation mask 直接拟合香烟盒上表面四点，不再走旧的颜色/暗色 mask 检测：
+默认模式已经切到 `yolo`，使用 `models/YanHe20class.pt` 的 segmentation mask 直接拟合香烟盒上表面四点，不再走旧的颜色/暗色 mask 检测：
 
 ```bash
 PYTHONPATH="$PWD:$PWD/scripts" python3 scripts/cigarette_pose_optical_api.py \
@@ -328,7 +328,7 @@ PYTHONPATH="$PWD:$PWD/scripts" python3 scripts/cigarette_pose_optical_api.py \
 long-side-m  = 0.161
 short-side-m = 0.095
 mode         = yolo
-yolo-model   = models/Liqun_Xiongmao.pt
+yolo-model   = models/YanHe20class.pt
 yolo-conf    = 0.15
 yolo-imgsz   = 640
 yolo-device  = auto
@@ -341,7 +341,7 @@ cy           = 默认 240.0；推荐标定值 249.90
 stereo-baseline-mm = 60.0
 ```
 
-2026-05-27 起默认模型已更新为 `models/Liqun_Xiongmao.pt`，用于识别利群和熊猫两种烟盒。模型类别名为 `Xizi_Liqun` 和 `XiongMao`。接口默认不按类别过滤；YOLO 返回的每个候选都会带 `class_id` / `class_name`，坐标计算仍按 `yolo_select` 和 `yolo_index` 从所有候选里选一个。
+2026-07-01 起默认模型已更新为 `models/YanHe20class.pt`，用于 20 类烟盒 segmentation。模型类别名为数字编码：`31019915`、`43010159`、`48013265`、`33013189`、`42013109`、`33013181`、`42013086`、`42013085`、`34063141`、`34063140`、`34063147`、`42013097`、`42013096`、`34063142`、`42013075`、`34063136`、`34063135`、`48090225`、`48090217`、`48090201`。接口默认不按类别过滤；YOLO 返回的每个候选都会带 `class_id` / `class_name`，坐标计算仍按 `yolo_select` 和 `yolo_index` 从所有候选里选一个。
 
 YOLO 模式会按左目选中候选的类别自动切换上表面尺寸再计算 PnP/XYZ：
 
