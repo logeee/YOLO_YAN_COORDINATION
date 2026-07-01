@@ -1168,6 +1168,10 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
     requested_label = overrides.get("label") or overrides.get("yolo_label") or overrides.get("yolo_class_name")
     if requested_label and not result.get("requested_yolo_label"):
         result["requested_yolo_label"] = str(requested_label)
+    if not isinstance(result.get("intrinsics_assumption"), dict):
+        result["intrinsics_assumption"] = _effective_intrinsics(config)
+    if not isinstance(result.get("intrinsics_assumption_right"), dict):
+        result["intrinsics_assumption_right"] = _effective_intrinsics_right(config)
     server_info = {
         "resident": True,
         "pid": os.getpid(),
@@ -2297,8 +2301,20 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
       const objectSizeRows = Array.from(document.querySelectorAll("[data-object-size-row]"));
       const saveObjectSizesButton = document.getElementById("debugSaveObjectSizes");
       const objectSizesStatus = document.getElementById("debugObjectSizesStatus");
-      const calibratedIntrinsics = {{ fx: "271.24", fy: "271.22", cx: "323.97", cy: "249.90" }};
-      const oldDefaultIntrinsics = {{ fx: "260.00", fy: "260.00", cx: "320.00", cy: "240.00" }};
+      const calibratedIntrinsics = {{
+        fx: "275.06",
+        fy: "275.39",
+        cx: "305.71",
+        cy: "268.34",
+        dist_coeffs: ["0.05998239", "-0.07112947", "-0.00037432", "0.00015172", "0.01724672"],
+      }};
+      const oldDefaultIntrinsics = {{
+        fx: "260.00",
+        fy: "260.00",
+        cx: "320.00",
+        cy: "240.00",
+        dist_coeffs: ["0", "0", "0", "0", "0"],
+      }};
       const readIntrinsicsObject = () => {{
         const values = {{}};
         for (const input of intrinsicInputs) {{
@@ -2333,6 +2349,14 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
         for (const input of intrinsicInputs) {{
           const name = input.dataset.intrinsic;
           if (Object.prototype.hasOwnProperty.call(values, name)) input.value = values[name];
+        }}
+        if (Array.isArray(values.dist_coeffs)) {{
+          for (const input of distInputs) {{
+            const idx = Number(input.dataset.distIndex);
+            if (Number.isInteger(idx) && idx >= 0 && idx < values.dist_coeffs.length) {{
+              input.value = values.dist_coeffs[idx];
+            }}
+          }}
         }}
         updateLinks();
       }};
@@ -2408,7 +2432,8 @@ def _debug_dashboard_html(payload: dict[str, Any]) -> str:
           if (!res.ok || !payload.ok) throw new Error(payload.error || `HTTP ${{res.status}}`);
           const effective = payload.effective_defaults || {{}};
           if (currentIntrinsics && Number.isFinite(Number(effective.fx))) {{
-            currentIntrinsics.textContent = `当前 API 默认 / 本次计算：fx=${{Number(effective.fx).toFixed(2)}}, fy=${{Number(effective.fy).toFixed(2)}}, cx=${{Number(effective.cx).toFixed(2)}}, cy=${{Number(effective.cy).toFixed(2)}}`;
+            const dist = Array.isArray(effective.dist_coeffs) ? effective.dist_coeffs : [];
+            currentIntrinsics.textContent = `当前 API 默认 / 本次计算：fx=${{Number(effective.fx).toFixed(2)}}, fy=${{Number(effective.fy).toFixed(2)}}, cx=${{Number(effective.cx).toFixed(2)}}, cy=${{Number(effective.cy).toFixed(2)}}, dist=[${{dist.map((v) => Number(v).toFixed(6)).join(", ")}}]`;
           }}
           if (saveStatus) saveStatus.textContent = "已设为 API 默认";
         }} catch (err) {{
