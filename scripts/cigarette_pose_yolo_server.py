@@ -1155,8 +1155,18 @@ def _append_arg(argv: list[str], name: str, value: Any) -> None:
     argv.extend([flag, str(value)])
 
 
+def _ensure_logging_mp_compat() -> None:
+    try:
+        import logging_mp
+    except Exception:
+        return
+    if not hasattr(logging_mp, "getLogger") and hasattr(logging_mp, "get_logger"):
+        logging_mp.getLogger = logging_mp.get_logger
+
+
 def _get_image_client(host: str) -> Any:
     if host not in IMAGE_CLIENTS:
+        _ensure_logging_mp_compat()
         from teleimager.image_client import ImageClient
 
         IMAGE_CLIENTS[host] = ImageClient(host=host)
