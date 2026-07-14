@@ -14,6 +14,7 @@ import html as html_lib
 import json
 import math
 import os
+import socket
 import sys
 import threading
 import time
@@ -106,6 +107,61 @@ RUNTIME_OBJECT_SIZES_MM: dict[str, dict[str, Any]] | None = None
 REQUEST_COUNTER = 0
 REQUEST_COUNTER_LOCK = threading.Lock()
 IMAGE_CLIENTS: dict[str, Any] = {}
+
+
+def _classify_error(exc_or_text: Any) -> str:
+    text = str(exc_or_text or "")
+    lowered = text.lower()
+    if isinstance(exc_or_text, TimeoutError) or "no head camera frame" in lowered:
+        return "CAMERA_NO_FRAME"
+    if "camera service unavailable" in lowered or "connection refused" in lowered or "timed out" in lowered:
+        return "CAMERA_SERVICE_UNAVAILABLE"
+    if "cannot find uvccamera" in lowered or "head_camera failed" in lowered or "camera not found" in lowered:
+        return "CAMERA_NOT_FOUND"
+    if "expected side-by-side binocular image" in lowered:
+        return "CAMERA_FRAME_FORMAT_INVALID"
+    if "yolo found no detections" in lowered:
+        return "NO_YOLO_DETECTION"
+    if "reprojection" in lowered:
+        return "PNP_REPROJECTION_TOO_HIGH"
+    if "cuda" in lowered and ("out of memory" in lowered or "oom" in lowered):
+        return "CUDA_OUT_OF_MEMORY"
+    return "INTERNAL_ERROR"
+
+
+def _error_payload(exc_or_text: Any, *, request_id: str | None = None, elapsed_ms: float | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "ok": False,
+        "error_code": _classify_error(exc_or_text),
+        "error": str(exc_or_text),
+    }
+    if request_id:
+        payload["request_id"] = request_id
+    if elapsed_ms is not None:
+        payload["elapsed_ms"] = elapsed_ms
+    return payload
+
+
+def _check_tcp_port(host: str, port: int, timeout_sec: float = 0.35) -> tuple[bool, str | None]:
+    try:
+        with socket.create_connection((host, int(port)), timeout=float(timeout_sec)):
+            return True, None
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def _camera_status(host: str = "127.0.0.1") -> dict[str, Any]:
+    ok, error = _check_tcp_port(host, 60000)
+    status: dict[str, Any] = {
+        "host": host,
+        "config_port": 60000,
+        "config_port_open": ok,
+        "ok": ok,
+    }
+    if not ok:
+        status["error_code"] = "CAMERA_SERVICE_UNAVAILABLE"
+        status["error"] = error
+    return status
 LATEST_RESULT: dict[str, Any] | None = None
 RESULT_CACHE: dict[str, dict[str, Any]] = {}
 RESULT_CACHE_ORDER: list[str] = []
@@ -1201,6 +1257,9 @@ def _yolo_class_names(model_path: str | Path) -> list[str]:
 
 
 def _capture_head_images_persistent(host: str, wait_sec: float) -> tuple[np.ndarray, np.ndarray]:
+    port_ok, port_error = _check_tcp_port(host, 60000)
+    if not port_ok:
+        raise ConnectionError(f"camera service unavailable at {host}:60000: {port_error}")
     client = _get_image_client(host)
     deadline = time.monotonic() + float(wait_sec)
     while time.monotonic() < deadline:
@@ -1512,21 +1571,55 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
     global LATEST_RESULT
     request_id = _next_request_id()
     started = time.perf_counter()
-    with POSE_LOCK:
-        out_dir = config.out_root / f"request_{request_id}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        host = str(overrides.get("host", "127.0.0.1"))
-        wait_sec = float(overrides.get("wait_sec", 5.0))
-        left_image, right_image = _capture_head_images_persistent(host, wait_sec)
-        left_path = out_dir / "server_left_input.jpg"
-        right_path = out_dir / "server_right_input.jpg"
-        if not cv2.imwrite(str(left_path), left_image):
-            raise RuntimeError(f"failed to write left image: {left_path}")
-        if not cv2.imwrite(str(right_path), right_image):
-            raise RuntimeError(f"failed to write right image: {right_path}")
-        _apply_object_sizes_to_pnp(config)
-        args = _build_pose_args(config, out_dir, left_path, right_path, overrides)
-        result, exit_code = run_pose(args)
+    host = str(overrides.get("host", "127.0.0.1"))
+    effective_model = _effective_yolo_model(config)
+    server_info = {
+        "resident": True,
+        "pid": os.getpid(),
+        "request_id": request_id,
+        "elapsed_ms": None,
+        "model_cache_size": len(YOLO_MODEL_CACHE),
+        "yolo_model": effective_model,
+        "yolo_class_names": _yolo_class_names(effective_model),
+    }
+    try:
+        with POSE_LOCK:
+            out_dir = config.out_root / f"request_{request_id}"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            wait_sec = float(overrides.get("wait_sec", 5.0))
+            left_image, right_image = _capture_head_images_persistent(host, wait_sec)
+            left_path = out_dir / "server_left_input.jpg"
+            right_path = out_dir / "server_right_input.jpg"
+            if not cv2.imwrite(str(left_path), left_image):
+                raise RuntimeError(f"failed to write left image: {left_path}")
+            if not cv2.imwrite(str(right_path), right_image):
+                raise RuntimeError(f"failed to write right image: {right_path}")
+            _apply_object_sizes_to_pnp(config)
+            args = _build_pose_args(config, out_dir, left_path, right_path, overrides)
+            result, exit_code = run_pose(args)
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        server_info["elapsed_ms"] = elapsed_ms
+        response = _error_payload(exc, request_id=request_id, elapsed_ms=elapsed_ms)
+        response.update(
+            {
+                "exit_code": 20,
+                "center_xyz_mm": None,
+                "x_mm": None,
+                "y_mm": None,
+                "z_mm": None,
+                "center_above_xyz_mm": None,
+                "range_from_left_camera_mm": None,
+                "left_depth_mm": None,
+                "debug_images": {},
+                "camera": _camera_status(host),
+                "server": server_info,
+            }
+        )
+        LATEST_RESULT = response
+        _remember_result(response)
+        status = 503 if response.get("error_code", "").startswith("CAMERA_") else 500
+        return status, response
     elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
     requested_label = overrides.get("label") or overrides.get("yolo_label") or overrides.get("yolo_class_name")
     if requested_label and not result.get("requested_yolo_label"):
@@ -1535,16 +1628,7 @@ def _run_pose_request(config: ServerConfig, compact: bool, overrides: dict[str, 
         result["intrinsics_assumption"] = _effective_intrinsics(config)
     if not isinstance(result.get("intrinsics_assumption_right"), dict):
         result["intrinsics_assumption_right"] = _effective_intrinsics_right(config)
-    effective_model = _effective_yolo_model(config)
-    server_info = {
-        "resident": True,
-        "pid": os.getpid(),
-        "request_id": request_id,
-        "elapsed_ms": elapsed_ms,
-        "model_cache_size": len(YOLO_MODEL_CACHE),
-        "yolo_model": effective_model,
-        "yolo_class_names": _yolo_class_names(effective_model),
-    }
+    server_info["elapsed_ms"] = elapsed_ms
     result["server"] = server_info
     _enrich_result_object_size(config, result)
     result["object_size_config"] = _object_size_config_payload(config)
@@ -3105,6 +3189,7 @@ def _health_payload(config: ServerConfig) -> dict[str, Any]:
         "yolo_class_names": _yolo_class_names(effective_model),
         "cuda_available": cuda_available,
         "torch_cuda": torch_cuda,
+        "camera": _camera_status("127.0.0.1"),
         "model_cache_size": len(YOLO_MODEL_CACHE),
         "endpoints": [
             "/health",
@@ -3228,7 +3313,7 @@ def make_handler(config: ServerConfig) -> type[BaseHTTPRequestHandler]:
                 status, payload = _run_pose_request(config, compact=(path == "/xyz"), overrides=overrides)
                 _json_response(self, status, payload)
             except Exception as exc:
-                _json_response(self, 500, {"ok": False, "error": str(exc)})
+                _json_response(self, 500, _error_payload(exc))
 
     return PoseHandler
 
