@@ -12,7 +12,7 @@
 
   <view class="signal-line {{connected ? 'online' : 'offline'}}">
     <view class="signal-dot"></view>
-    <text>{{connected ? 'BLE 已连接，可以长按控制' : validating ? '已连接蓝牙，正在验证 G1D 服务' : scanning ? '正在扫描 G1D-BLE-RCS 设备' : 'BLE 未连接'}}</text>
+    <text>{{connected ? 'BLE 已连接，可以长按控制' : validating ? '已连接蓝牙，正在验证遥控服务' : scanning ? '正在扫描 BLE-RCS 设备' : 'BLE 未连接'}}</text>
   </view>
 
   <view class="toolbar">
@@ -22,13 +22,13 @@
 
   <view class="device-list" wx:if="{{candidateDevices.length}}">
     <view class="device-title">
-      <text>扫描到的 G1D-BLE-RCS 设备</text>
+      <text>扫描到的 BLE-RCS 设备</text>
       <text class="device-hint">点击设备连接</text>
     </view>
     <view class="device-item" wx:for="{{candidateDevices}}" wx:key="deviceId" data-device-id="{{item.deviceId}}" bindtap="connectCandidate">
       <view>
         <text class="device-name">{{item.name}}</text>
-        <text class="device-rssi">RSSI {{item.RSSI}}</text>
+        <text class="device-rssi">RSSI {{item.RSSI}}{{item.matchedByUuid ? ' · UUID匹配' : ''}}</text>
       </view>
       <text class="device-action">连接</text>
     </view>
@@ -85,14 +85,20 @@
       bindtouchstart="holdUp"
       bindtouchend="releaseHold"
       bindtouchcancel="releaseHold">
-      <text class="pad-symbol">⇧</text>
+      <view class="column-icon column-icon-up">
+        <view class="column-arrow-head"></view>
+        <view class="column-arrow-stem"></view>
+      </view>
       <text>升</text>
     </view>
     <view class="column {{activeAction === 'column_down' ? 'is-active' : ''}}"
       bindtouchstart="holdDown"
       bindtouchend="releaseHold"
       bindtouchcancel="releaseHold">
-      <text class="pad-symbol">⇩</text>
+      <view class="column-icon column-icon-down">
+        <view class="column-arrow-stem"></view>
+        <view class="column-arrow-head"></view>
+      </view>
       <text>降</text>
     </view>
   </view>

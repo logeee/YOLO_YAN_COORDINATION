@@ -1,0 +1,18 @@
+[Unit]
+Description=G1-D Debug Tool Portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/unitree/YOLO_YAN_COORDINATION/config/g1d_tool_portal.env
+ExecStart=/bin/bash /home/unitree/YOLO_YAN_COORDINATION/scripts/g1d_tool_portal_server.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

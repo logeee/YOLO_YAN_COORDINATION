@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>吸盘控制台</title>
+  <link rel="stylesheet" href="/static/suction.css">
+</head>
+<body>
+  <header>
+    <h1>吸盘控制台</h1>
+    <div class="connection"><span id="onlineDot" class="dot"></span><span id="onlineText">连接中</span></div>
+  </header>
+  <main>
+    <section id="controlSection">
+      <div class="section-head"><h2>控制</h2><div id="modelText" class="model">正在识别设备</div></div>
+      <div class="controls">
+        <div class="actions">
+          <button data-command="init">初始化</button>
+          <button data-command="suck" class="primary">开始吸取</button>
+          <button id="releaseButton" data-command="release" class="release">释放</button>
+          <button id="stopButton" data-command="stop" class="stop">停止</button>
+        </div>
+        <div id="parameterPanel" class="parameter-panel hidden">
+          <div class="fields">
+            <label>最大真空度 %<input id="maxVacuum" type="number" min="0" max="60" value="60"></label>
+            <label>最小真空度 %<input id="minVacuum" type="number" min="0" max="60" value="40"></label>
+          </div>
+          <button id="setParams">应用 EVS01 参数</button>
+        </div>
+        <div id="esNotice" class="notice hidden">行为与旧 EVS01 一致：停止不释放，保留当前吸取状态；释放会短时反吹后关闭全部输出。ES80Z 当前协议只确认命令已被设备接收，不提供负压或工件吸附反馈。</div>
+      </div>
+    </section>
+    <section>
+      <div class="section-head"><h2>设备状态</h2><div id="updatedAt" class="model">--</div></div>
+      <div class="status-grid">
+        <div class="metric"><div class="label">服务</div><div id="serviceValue" class="value">--</div></div>
+        <div class="metric"><div class="label">设备</div><div id="deviceValue" class="value">--</div></div>
+        <div class="metric"><div class="label">就绪</div><div id="readyValue" class="value">--</div></div>
+        <div class="metric"><div class="label">吸取状态</div><div id="suctionValue" class="value">--</div></div>
+        <div class="metric"><div class="label">故障码</div><div id="faultValue" class="value">--</div></div>
+        <div class="metric"><div class="label">真空度</div><div id="vacuumValue" class="value">--</div></div>
+      </div>
+      <div class="event-log"><strong>最近操作</strong><pre id="eventLog">等待操作</pre></div>
+      <details><summary>原始 JSON</summary><pre id="rawJson">{}</pre></details>
+    </section>
+  </main>
+  <script src="/static/suction.js"></script>
+</body>
+</html>

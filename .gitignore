@@ -5,3 +5,6 @@ __pycache__/
 .vscode/
 .idea/
 *.log
+config/g1d_tool_portal.env
+config/suction_api_proxy.env
+config/g1d_body_control.env

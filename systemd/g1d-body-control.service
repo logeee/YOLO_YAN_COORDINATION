@@ -1,0 +1,22 @@
+[Unit]
+Description=G1-D Body Atomic Action Topic API
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/unitree/YOLO_YAN_COORDINATION/config/g1d_body_control.env
+ExecStart=/bin/bash /home/unitree/YOLO_YAN_COORDINATION/scripts/g1d_body_control.sh
+Restart=always
+RestartSec=5
+MemoryMax=512M
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

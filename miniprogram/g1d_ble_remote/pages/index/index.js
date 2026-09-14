@@ -1,7 +1,7 @@
 const SERVICE_UUID = '6f9d0001-7f70-4f8f-9f25-41f0a7a1b001'
 const CONTROL_UUID = '6f9d0002-7f70-4f8f-9f25-41f0a7a1b001'
 const HEARTBEAT_MS = 250
-const REMOTE_NAME_RE = /^G1D-BLE-RCS-\d{4,6}$/
+const REMOTE_NAME_RE = /^[A-Za-z0-9]+-BLE-RCS-\d+$/
 
 function normalizeUuid(value) {
   return String(value || '').toLowerCase().replace(/-/g, '')
@@ -14,6 +14,15 @@ function sameUuid(left, right) {
 function isG1NamedDevice(device) {
   const name = device.name || device.localName || ''
   return REMOTE_NAME_RE.test(name)
+}
+
+function hasRemoteServiceUuid(device) {
+  const uuids = device.advertisServiceUUIDs || device.advertiseServiceUUIDs || []
+  return uuids.some((uuid) => sameUuid(uuid, SERVICE_UUID))
+}
+
+function isRemoteCandidate(device) {
+  return isG1NamedDevice(device) || hasRemoteServiceUuid(device)
 }
 
 function textToArrayBuffer(text) {
@@ -103,7 +112,7 @@ Page({
     if (this.data.deviceId) {
       wx.closeBLEConnection({ deviceId: this.data.deviceId })
     }
-    this.addLog('开始扫描 G1D-BLE-RCS')
+    this.addLog('开始扫描 BLE-RCS')
     this.scanSeen = 0
     this.scanFound = 0
     this.setData({
@@ -130,7 +139,7 @@ Page({
       wx.onBluetoothDeviceFound((res) => {
         const devices = res.devices || []
         this.scanFound += devices.length
-        const candidates = devices.filter(isG1NamedDevice)
+        const candidates = devices.filter(isRemoteCandidate)
         if (candidates.length) {
           this.mergeCandidateDevices(candidates)
         }
@@ -139,7 +148,8 @@ Page({
           const uuids = item.advertisServiceUUIDs || item.advertiseServiceUUIDs || []
           if (this.scanSeen < 6) {
             this.scanSeen += 1
-            this.addLog(`附近设备 ${name || '无名称'} ${uuids.length ? '有UUID' : '无UUID'}`)
+            const uuidText = uuids.length ? uuids[0].slice(0, 8) : '无UUID'
+            this.addLog(`附近设备 ${name || '无名称'} ${uuidText}`)
           }
         }
       })
@@ -152,7 +162,12 @@ Page({
           if (this.data.scanning) {
             wx.stopBluetoothDevicesDiscovery()
             this.setData({ scanning: false })
-            this.addLog(`未扫描到 G1D-BLE-RCS，共发现 ${this.scanFound} 条广播`)
+            const count = this.data.candidateDevices.length
+            if (count > 0) {
+              this.addLog(`扫描完成，发现 ${count} 台 BLE-RCS 设备`)
+            } else {
+              this.addLog(`未扫描到 BLE-RCS，共发现 ${this.scanFound} 条广播`)
+            }
           }
         }, 12000)
       },
@@ -170,9 +185,14 @@ Page({
     }
     for (const item of devices) {
       const name = item.name || item.localName || ''
+      const matchedByName = REMOTE_NAME_RE.test(name)
+      const matchedByUuid = hasRemoteServiceUuid(item)
+      const displayName = matchedByName ? name : `BLE-RCS服务(${name || '无名称'})`
       byId[item.deviceId] = {
         deviceId: item.deviceId,
-        name,
+        name: displayName,
+        rawName: name,
+        matchedByUuid,
         RSSI: item.RSSI || item.rssi || 0
       }
     }

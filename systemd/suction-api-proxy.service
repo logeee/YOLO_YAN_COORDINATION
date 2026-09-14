@@ -1,0 +1,18 @@
+[Unit]
+Description=Legacy Suction API Compatibility Proxy to ES80Z
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+Group=unitree
+WorkingDirectory=/home/unitree/YOLO_YAN_COORDINATION
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/unitree/YOLO_YAN_COORDINATION/config/suction_api_proxy.env
+ExecStart=/bin/bash /home/unitree/YOLO_YAN_COORDINATION/scripts/suction_api_proxy_server.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

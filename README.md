@@ -1,5 +1,19 @@
 # YOLO 烟盒坐标服务
 
+## 集成服务：工具门户、吸盘代理、本体控制
+
+仓库现包含 `services/g1d_tool_portal`（18079）、`services/es80z_api_proxy`（18080）和 `services/g1d_body_control`（ROS2 Topic）。三个服务保持独立运行，设备参数在 `config/*.env` 中配置，模板为同名 `.env.example`，本机 `.env` 不提交到 Git。
+
+在机器人标准路径 `/home/unitree/YOLO_YAN_COORDINATION` 下，先复制并编辑三个配置模板，再安装：
+
+```bash
+bash scripts/install_autostart_services.sh portal suction-proxy body-control
+```
+
+首次配置缺失时安装器生成模板并退出，请修改设备参数后重跑。安装会备份原 service 并重启所选服务；本体控制保留真实执行模式，请在无动作任务时迁移。无参数仍只安装原来的五项，`all` 安装全部八项。
+
+详细步骤见 [集成服务部署与迁移](docs/INTEGRATED_SERVICES_DEPLOYMENT.md)。
+
 这是机器人左目相机的烟盒 YOLO 检测与坐标输出交付版本。
 
 ## 当前版本
@@ -20,6 +34,8 @@
 
 | 端口 | 服务 | 页面/接口 |
 | --- | --- | --- |
+| `18079` | G1-D 工具门户 | `http://<机器人IP>:18079/` |
+| `18080` | ES80Z 吸盘代理 | `http://<机器人IP>:18080/` |
 | `18081` | YOLO 烟盒识别与坐标服务 | `http://<机器人IP>:18081/debug` |
 | `18084` | G1-D 位置微调服务 | `http://<机器人IP>:18084/health` |
 | `18085` | G1-D / 烟盒 3D 相对位置可视化 | `http://<机器人IP>:18085/` |
@@ -28,7 +44,7 @@
 无 WiFi 时的蓝牙遥控不占用 HTTP 端口，机器人会广播 BLE 名称：
 
 ```text
-G1D-BLE-RCS-12700
+<机器人型号>-BLE-RCS-<编号>
 ```
 
 思岚底盘传感器可视化是独立仓库，不在本仓库里：
@@ -59,6 +75,20 @@ cd ~/YOLO_YAN_COORDINATION
 cd ~/YOLO_YAN_COORDINATION
 git pull
 ```
+
+安装依赖
+```bash
+# 激活环境
+(base) unitree@ubuntu:~$ conda activate tv
+# 安装依赖
+(tv) unitree@ubuntu:~$ pip install --no-deps \
+    numpy==1.26.4 \
+    opencv-python==4.11.0.86 \
+    ultralytics==8.4.62 \
+    requests==2.33.1
+(tv) unitree@ubuntu:~$
+```
+
 
 服务文件默认要求仓库路径是：
 
@@ -704,6 +734,19 @@ systemd/g1d-ble-remote.service         开机自启服务
 miniprogram/g1d_ble_remote/            微信小程序示例
 docs/G1D_BLE_REMOTE_CONTROL.md         详细说明
 ```
+修改蓝牙编号
+```bash
+vim systemd/g1d-ble-remote.service
+# 12700为机器人编号，每个机器人都不一样，要进行更新
+Environment=G1D_BLE_LOCAL_NAME=G1D-BLE-RCS-12700
+Environment=G1D_BLE_ADAPTER_ALIAS=G1D-BLE-RCS-12700
+```
+
+```bash
+systemctl status g1d-ble-remote.service --no-pager
+tail -f /tmp/g1d_ble_remote_service.log
+bluetoothctl show
+```
 
 机器人预览模式，先验证手机能连接和写入，不会动机器人：
 
@@ -742,7 +785,10 @@ sudo systemctl daemon-reload
 sudo systemctl restart g1d-ble-remote.service
 ps -ef | grep g1d_ble_remote | grep -v grep
 ```
-
+查看蓝牙
+```bash
+bluetoothctl show
+```
 BLE 写入协议很短，适合小程序：
 
 ```text

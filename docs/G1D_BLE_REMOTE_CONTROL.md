@@ -1,6 +1,6 @@
 # G1-D 蓝牙遥控
 
-这个服务用于无 WiFi 场景下代替遥控手柄。机器人作为 BLE 外设广播 `G1D-BLE-RCS-<编号>`，手机小程序作为 BLE 中心设备连接后写入短命令。
+这个服务用于无 WiFi 场景下代替遥控手柄。机器人作为 BLE 外设广播 `<机器人型号>-BLE-RCS-<编号>`，手机小程序作为 BLE 中心设备连接后写入短命令。
 
 ## 设备检查结论
 
@@ -41,11 +41,11 @@ python3 gi OK
 
 ```text
 G1D-BLE-RCS-12700
-G1D-BLE-RCS-1001
-G1D-BLE-RCS-123456
+H2-BLE-RCS-1001
+B2-BLE-RCS-123456
 ```
 
-小程序只会扫描并列出 `G1D-BLE-RCS-` 后 4 到 6 位数字的设备，点选后再连接。小程序长按时每 250ms 写一次：
+小程序只会扫描并列出符合 `<机器人型号>-BLE-RCS-<数字编号>` 的设备，点选后再连接。小程序长按时每 250ms 写一次：
 
 ```text
 H forward 0.20
@@ -101,7 +101,7 @@ preview hold forward 0.20
 miniprogram/g1d_ble_remote
 ```
 
-用微信开发者工具导入这个目录。页面会扫描名称为 `G1D-BLE-RCS-<编号>` 的 BLE 设备，连接后查找上面的服务 UUID 和控制 Characteristic。
+用微信开发者工具导入这个目录。页面会扫描名称符合 `<机器人型号>-BLE-RCS-<编号>` 的 BLE 设备，连接后查找上面的服务 UUID 和控制 Characteristic。
 
 按钮行为：
 
