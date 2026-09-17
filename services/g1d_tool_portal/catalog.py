@@ -1,7 +1,20 @@
 """Tool definitions; device addresses come from environment configuration."""
 from typing import Any, Dict, List
 
+
 TOOLS: List[Dict[str, Any]] = [
+    {
+        "id": "x_nav",
+        "name": "底盘导航兼容 API",
+        "description": "兼容既有作业平台导航接口并转发至 18083",
+        "location": "body",
+        "port": 9000,
+        "path": "/",
+        "health_path": "/api/health",
+        "probe_timeout": 4.0,
+        "kind": "api",
+        "details_adapter": "x_nav",
+    },
     {
         "id": "suction",
         "name": "吸盘控制台",
@@ -11,6 +24,7 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/",
         "health_path": "/api/v1/health",
         "kind": "frontend",
+        "details_adapter": "suction",
     },
     {
         "id": "yolo",
@@ -21,6 +35,7 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/debug",
         "health_path": "/health",
         "kind": "frontend",
+        "details_adapter": "yolo",
     },
     {
         "id": "slam",
@@ -31,6 +46,7 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/",
         "health_path": "/api/health",
         "kind": "frontend",
+        "details_adapter": "slam",
     },
     {
         "id": "visualizer",
@@ -61,6 +77,18 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/",
         "health_path": "/api/health",
         "kind": "frontend",
+        "details_adapter": "arm_console",
+    },
+    {
+        "id": "arm_ik",
+        "name": "机械臂联合 IK",
+        "description": "腰部与右臂联合逆解、连续抓取轨迹及任务执行状态",
+        "location": "box",
+        "port": 18090,
+        "path": "/",
+        "health_path": "/api/state",
+        "kind": "runtime",
+        "details_adapter": "arm_ik",
     },
     {
         "id": "control_api",
@@ -81,6 +109,7 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/health",
         "health_path": "/health",
         "kind": "api",
+        "details_adapter": "pose_adjust",
     },
     {
         "id": "lift_height",
@@ -91,6 +120,7 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/api/offset",
         "health_path": "/api/basic_status",
         "kind": "api",
+        "details_adapter": "lift_height",
     },
     {
         "id": "arm_relay",
@@ -101,15 +131,17 @@ TOOLS: List[Dict[str, Any]] = [
         "path": "/",
         "health_path": "/",
         "kind": "api",
+        "details_adapter": "arm_relay",
     },
     {
         "id": "es80z_backend",
         "name": "ES80Z RS485 后端",
-        "description": "盒子侧串口、Modbus RTU 与吸盘状态服务",
+        "description": "串口、Modbus RTU 与吸盘状态服务",
         "location": "box",
         "port": 18089,
         "path": "/api/v1/health",
         "health_path": "/api/v1/health",
         "kind": "api",
+        "details_adapter": "suction",
     },
 ]

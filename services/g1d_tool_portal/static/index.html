@@ -9,14 +9,23 @@
 <body>
   <header>
     <h1>G1-D 调试工具目录</h1>
-    <div class="summary"><span id="bodyHost">本体 --</span><span id="boxHost">盒子 --</span><span id="updated">正在检查</span></div>
+    <div class="summary">
+      <span id="bodyHost">本体 --</span>
+      <span id="boxHost">盒子 --</span>
+      <span id="portalVersion">目录 --</span>
+      <span id="updated">正在检查</span>
+    </div>
   </header>
   <main>
-    <div class="section-head"><h2>可视化工具</h2><span class="section-note">点击卡片打开对应前端</span></div>
+    <div class="section-head"><h2>调试前端</h2><span class="section-note">点击卡片打开对应工具</span></div>
     <div id="frontendGrid" class="grid"></div>
+
+    <div class="section-head"><h2>核心运行服务</h2><span class="section-note">显示实际运行模式、版本和关键能力</span></div>
+    <div id="runtimeGrid" class="grid runtime-grid"></div>
+
     <div class="section-head"><h2>接口服务</h2><span class="section-note">用于状态检查与程序调用</span></div>
     <div id="apiGrid" class="grid api-grid"></div>
-    <footer>目录页只读取健康状态，不会向机器人发送控制命令。</footer>
+    <footer>目录页只读取健康状态和运行元数据，不会向机器人发送控制命令。</footer>
   </main>
   <script src="/static/portal.js"></script>
 </body>
